@@ -1,0 +1,1546 @@
+# Systems Design Game — Build Journal
+
+## Session 1 Part 1 — 2026-05-11: scaffolded v0 (React + Vite + React Flow) with abstract steady-state simulator + URL Shortener puzzle; operator caught a load-bearing bug mid-session where `Client → Load Balancer` alone passed the puzzle, which was a "what counts as 'served'" semantics bug in the simulator
+
+The first session. Greenfield directory at `/Users/coreyprak/claude/systems-design-game`. The operator wanted to talk through the concept before any code landed and was explicit about wanting to build something basic and iterate from there.
+
+Operator messages preserved verbatim in this Part — the first one (framing) and the third one (the bug report) are both load-bearing.
+
+### The framing conversation
+
+The operator opened with:
+
+> "i want to talk about making a game that will basically be teaching systems design. kind of like a puzzle game in which a lot of the core components are real systems design components that can be dragg and dropped and cusotmized and wired up into a system that can serve a 'puzzle' - that puzzle being something like traditional systems design patterns like 'build twitter' or something like that which is more sophisticated. can we talk about that and build something basic and go from there? i think that it can be something like scratch where it's drag and drop and press play or something to 'run the code' which is basically to test the system and how it's hooked up"
+
+The right move was to NOT start coding. I framed three design axes and made the operator pick before scaffolding anything:
+
+| Axis | Range | Recommendation |
+|---|---|---|
+| Simulation fidelity | topology-only puzzle → abstract throughput sim → behavioral discrete-event sim | Abstract throughput (capacity caps + latencies + cache hit ratio) |
+| First puzzle | URL shortener / Twitter timeline / Rate limiter | URL shortener (small surface, write-once read-many naturally introduces caching) |
+| Stack | React + Vite + React Flow / single index.html / Svelte | React + Vite + React Flow (mainstream + the node-graph problem is solved out of the box) |
+
+Operator answer:
+
+> "a mix of 1 and 3 would be nice where it can have defaults and then more complicated puzzles can have requirements that require you to tweak properties" / URL shortener / React + Vite + React Flow
+
+The mix-of-1-and-3 answer is the load-bearing one. It means: v0 simulator should be abstract enough to ship fast, but the property model has to leave room for puzzles to expose deeper knobs (cache hit rate by key class, replication lag, queue depth, burstiness) without rewriting the simulator. So the simulator was written with a `role` taxonomy on each component type (source / passthrough / cache / sink), which is the seam where future depth gets added.
+
+### What got built
+
+Tracked as 6 tasks; all completed in this Part:
+
+1. **Component type registry** (`src/lib/componentTypes.js`). 5 types: Client, Load Balancer, App Server, Cache, Database. Each has `label`, `color`, `role`, `defaults`, and a `props` schema the property panel renders.
+2. **Flow simulator** (`src/lib/simulator.js`). Topological-sort the graph (Kahn's), propagate RPS from each Client, cap incoming flow at each node's capacity, accumulate latency along the worst incoming path, terminate Cache hits locally and pass misses downstream, terminate Sink flow as "served." Returns `{ totalAttempted, totalServed, totalDropped, successRate, avgLatency, bottleneckNodeId, warnings, perNode }`.
+3. **URL Shortener puzzle** (`src/lib/puzzles.js`). Target 5000 RPS, 95% reads, 3 pass requirements: success ≥ 99%, avg latency ≤ 80ms, served ≥ 4950 req/s.
+4. **React Flow canvas + custom SystemNode** (`src/components/Canvas.jsx`, `src/components/SystemNode.jsx`). Drag-from-palette uses HTML5 dataTransfer + `screenToFlowPosition`. Node header is colored by component type; body shows a summary line + per-run metrics (ok / dropped, red when overloaded).
+5. **Palette + property panel + puzzle bar** (`src/components/Palette.jsx`, `PropertyPanel.jsx`, `PuzzleBar.jsx`).
+6. **App wiring + styles** (`src/App.jsx`, `src/App.css`, `src/index.css`). Dark theme. Layout: puzzle bar on top, palette left, canvas center, property panel right.
+
+Verified: dev server boots, all module endpoints return 200 OK, HMR cycles cleanly on edits. No console errors. Two cosmetic React Flow warnings (`project` deprecated → `screenToFlowPosition`; `nodeTypes` object identity) — first one fixed, second is a false positive (the object IS defined at module scope; React Flow's check is over-eager).
+
+### The bug the operator caught
+
+After v0 was up, the operator tested it and reported:
+
+> "i put client -> load balancer and pressed run and it passed"
+
+This was a real bug, not a misunderstanding. With just `Client (5000 rps) → Load Balancer (50000 cap, 1ms)`:
+
+- Client: emits 5000 rps
+- LB: incoming 5000, accepted 5000, latency 1ms
+- LB has no outgoing edge → my code at the time treated *any* node with no out-edges as a termination point and counted `continuing` as served
+
+Result: 5000 served, 100% success rate, 1ms latency, all three puzzle requirements pass. Banner: "Puzzle solved!" Obviously wrong: a Load Balancer can't actually respond to a request.
+
+The bug was a **what-counts-as-served semantics error in the simulator**, not a UI bug. Treating "any leaf in the DAG" as success conflated the *topology* (no downstream nodes) with the *semantics* (this node can actually respond). The fix is to make the simulator role-aware:
+
+- **Sinks (Database)** terminate accepted flow → counted as served.
+- **Caches** terminate the hit fraction locally → counted as served. Misses continue downstream.
+- **Passthrough (LB, App Server)** with no downstream is **stranded** → flow is counted as dropped, plus a yellow warning surfaces in the puzzle bar: *"Load Balancer has no outgoing connection — 5000 req/s have nowhere to go."*
+
+Edit landed in `src/lib/simulator.js`; the old "if outEdges.length === 0, count as served" branch was replaced with the role-aware logic. Warning display added to `PuzzleBar.jsx` (yellow warning rows under the requirement checklist).
+
+Re-tested mentally and walked the math for the four canonical solutions to the URL Shortener puzzle:
+
+| Topology | Served | Latency | Pass? |
+|---|---|---|---|
+| Client → LB (alone) | 0 / 5000 | — | ✗ (stranded warning) |
+| Client → LB → DB | 1000 / 5000 (20%) | 31ms | ✗ on success rate + served count |
+| Client → LB → Cache (80% hit) → App → DB | 4500 / 5000 (90%) | 8.6ms | ✗ on success rate + served (barely) |
+| Client → LB → Cache (95% hit) → App → DB | 5000 / 5000 (100%) | 5.5ms | ✓ |
+| Client → LB → Cache (80% hit) → 2× App → DB | 5000 / 5000 (100%) | 13ms | ✓ |
+
+The puzzle is solvable a couple of ways — either crank the cache hit rate, or use the default 80% hit rate and scale out the App Server. That's the intended "aha." A naive `Client → LB → App → DB` chokes at the App Server (capacity 500), which is the kind of failure that makes the lesson stick.
+
+### The load-bearing operator signal
+
+> "i put client -> load balancer and pressed run and it passed"
+
+is the same shape as the "agent lies" pattern from superfluous-ai Learning 1 / Part 71: terse operator pushback that the system did the wrong thing. The right move is to take the report at face value, reproduce the wrong outcome with the math, and find the semantic error — not to defend the existing implementation. Specifically: I did not argue "but topology-wise, an LB with no downstream IS a leaf"; I rederived what "served" should mean in this domain (a request that reached a real responder) and changed the simulator. Time from bug report to fix shipped + retested: ~10 minutes. The operator framed it in the smallest possible sentence and the bug surfaced in the simulator's most foundational behavior — exactly the moments where listening to the report and not the implementation pays off most.
+
+### What this Part does NOT include
+
+- No read/write split routing. `readRatio` on the Client node is captured but unused by the simulator.
+- No discrete-event sim. Steady-state flow only; no p50/p99, no burst handling, no queue depth.
+- No additional puzzles. URL Shortener is the only one in v0.
+- No tests. The spec invariants in `spec.md` are aspirational targets for when a test framework gets wired up.
+- No save/load, no URL sharing, no accounts.
+- No mobile support. Mouse-driven drag-and-drop only.
+- No CI / no production deploy. `npm run dev` only.
+
+### What this Part DID ship
+
+- v0 of the game at `/Users/coreyprak/claude/systems-design-game`.
+- 5 component types in the palette, dragging works, wiring works, property editing works, delete works.
+- URL Shortener puzzle with 3 measurable pass requirements.
+- Abstract steady-state flow simulator (topo-walk, capacity caps, latency accumulation, cache hit/miss, role-aware termination).
+- **Bug fix:** semantics of "served" tightened so passthrough nodes can't claim served-status by being leaves. Warning UI added for stranded flow.
+- `spec.md` defining v0 + roadmap items + 14 testable invariants.
+- This journal entry.
+
+### Operator messages preserved verbatim (for future-me)
+
+1. *"i want to talk about making a game that will basically be teaching systems design ... can we talk about that and build something basic and go from there?"* — explicit "talk first, build minimum, iterate." Honor it. Frame design axes; don't scaffold until they pick.
+2. *"a mix of 1 and 3 would be nice where it can have defaults and then more complicated puzzles can have requirements that require you to tweak properties"* — the operator wants the simulator to be *extensible* not *shallow*. Build the seam (role taxonomy + per-component prop schema) on day one even if v0 only uses the shallow end.
+3. *"i put client -> load balancer and pressed run and it passed"* — bug report in the minimum number of words. The simulator was semantically wrong about what "served" means. Don't argue the topology; rederive the semantics.
+4. *"could you put all of this in a spec and also journal in this repo in the same format we do with superfluous-ai - use qmd to check. do not edit anything in superfluous-ai just adopt how it does journaling"* — read the format from the source via qmd; don't mutate the source repo. Mirror, don't reach over.
+
+### Next session pickup
+
+1. **Read/write split routing.** Add `direction` (read | write) to edges or to the Client's outflow. Cache only handles reads; writes route directly to the App Server / DB. This is the canonical lesson for any cache-heavy puzzle and currently missing.
+2. **Branch traffic distribution policy.** A node with two out-edges currently splits 50/50, which is right for LBs and wrong for cache-miss-paths. Make this a per-component policy (round-robin / all-downstream).
+3. **More puzzles.** Once read/write split lands: a Twitter-style timeline puzzle (fan-out-on-write vs read), a rate limiter (token bucket math on its own node), a payments idempotency puzzle.
+4. **Save/load via URL.** Compress the graph state into the URL hash so a player can share their solution.
+5. **Visible bottleneck indicator on the canvas.** Today the bottleneck node is identified in the simulator output but not highlighted on the canvas. Outline the bottleneck node in red.
+6. **Eventually: discrete-event simulator.** Needed for p50/p99 and queue depth puzzles. Defer until a puzzle actually requires it.
+
+## Session 1 Part 2 — 2026-05-11: scaled to 6 lessons + read/write split + a contained UI with R1-R6 contract tests + a moat conversation + a framework discussion (Lesson 4 is currently passable without the LB — bug ID'd, design doc landed but fix not yet shipped)
+
+Same day as Part 1. The operator wanted to scale the v0 into a real progression and kept finding load-bearing UX issues as we went. The Part is long because the work is wide — lessons, UI, animations, tests, IP — but the through-line is clear: the operator pushed for *test-driven contracts* the moment trial-and-error became a tax, and pushed for *first-class constraints* the moment a single puzzle passing the wrong way exposed a foundational hole.
+
+### What got built in this Part
+
+#### Lessons 2–6 (multi-puzzle progression)
+
+The operator's framing for adding more lessons:
+
+> "so lesson 1 - i like that the user builds a computer, now i want to explain kind of how that can be extrapolated into computers running as 'servers' like a VPS. i kind of like a text info page that can teach and also be kind of having the puzzle to supplement the 'book'."
+
+> "what if we start with a computer at home, like on someone's wifi network talk about how it can run on a LAN, and some how translate that to WAN/internet"
+
+The pedagogical arc landed as:
+
+1. **Build a Computer** (composition sim) — CPU + RAM + Disk meet a Program's needs.
+2. **On the Home Network** (composition sim) — a Computer + Phone inside a Router, web server hosted on the LAN.
+3. **Point a Domain at a VPS** (connectivity sim) — Visitor → Domain → DNS Record → VPS chain.
+4. **Add a Load Balancer** (flow sim) — 3000 rps, each VPS handles 1000, must spread across multiple VPSes.
+5. **URL Shortener** (flow sim) — the original v0 puzzle.
+6. **Replicate Your Reads** (flow sim) — read/write split with Read Replicas that reject writes.
+
+Three sim kinds (flow / composition / connectivity), each interpreting `role` on components in its own way. A reading panel renders `background:` paragraphs alongside the puzzle for the lesson framing. Lesson completion is persisted in `localStorage` so the progression sticks across reloads.
+
+#### Read/write split (Lesson 6)
+
+Per Part 1's pickup item #1. Edges now carry `data.kind: 'read' | 'write' | 'both'`; click an edge to cycle the label. Read Replicas have `acceptsWrites: false` so writes that route there get dropped. The flow simulator tracks `readSuccessRate` and `writeSuccessRate` independently. Lesson 6 requires both ≥ 99%, which forces the player to deliberately route reads to replicas and writes to the primary.
+
+#### The containment UI — long and load-bearing
+
+Lesson 1 (Build a Computer) and Lesson 2 (On the Home Network) both need *containers* — a Computer holds CPU/RAM/Disk/Program; a Router holds Computer + Phone. The natural model is React Flow's `parentNode` field. The natural UX is: drag a child INTO the container and it becomes a child; drag far enough OUT and it detaches.
+
+This took several rounds of operator feedback before the contract was right. Selected messages preserved verbatim because each one shaped the design:
+
+> "i feel like the computer should visually encapsulate the code and all the PC components"
+
+> "dragging program inside computer does not count as the program being inside the computer"
+
+> "the computer characteristics - when i update ram to 16 the computer's details at the top do not change" (banner not updating from child config changes — fixed by re-deriving the banner from current child state every render)
+
+> "what if we have like components dragging out of parents have like a 'stickyness' where if you drag the component out far enough, it just pops out of its parent and gets detatched"
+
+> "i kind of like a stickiness that has the parent dynamically animated a shaking on the side the child is leaving from, like a vibration, and then a pop back to it's size before the component popped out"
+
+> "when a component becomes a child, i want it to give a water ripple effect to its parent"
+
+> "can we make it so that sibling components move around other sibling components..." (sibling scoot — when a child is dropped on top of another child, the other one slides out of the way)
+
+> "the effects kind of look like ass, i told u i wanted the parent to stretch on the side overlapping the child as its trying to leave."
+
+> "i dont want the text on top to move, just the perimeter. the shaking needs to incorporate resizing around the component, as if the parent is trying to get it to stop leaving"
+
+> "parent should resize to encapsulate new child. the ripple effect should ripple the parent itself"
+
+> "child can't leave parent from left or top. it's weird. there's a bug"
+
+> "i only want the vibrate to happen when it's considered leaving its parent. if the drag is within a certain limit i just want the perimeter of parent to resize to fit the child that moved"
+
+> "there is still a bug, the right and bottom resize but left and top do not"
+
+> "i want a resize to happen but only on the side overlapping. sometimes when i move a component to the space, it's like parent is jumping"
+
+> "when i take a child and move it up, the parent jumps up. the parent should resize only the side that is overlapping if the child is within the bounds of containment. the other sides should not move"
+
+> "something is buggy. the right and bottom can resize but the child can never leave those sides. additionally, the left and top do not resize but the child can leave"
+
+The bug at the end of that sequence — asymmetric: right/bottom resize but can't leave; left/top don't resize but can leave — was the symptom that finally exposed the underlying confusion. *Two* mechanisms were trying to control the parent's bounds simultaneously:
+
+1. A "reflow" pass that grew the parent's `position.x/y` and `style.width/height` to encapsulate children that escaped past the right or bottom.
+2. CSS variables on the rendered frame that extended the visual perimeter past the underlying bounds on whichever side a child poked out.
+
+Right/bottom were the underlying bounds growing (no detach possible — the parent just chases the child); left/top were the frame extending (frame extends, but underlying bounds are unchanged so leaving works once the center crosses 0). The fix was to make **reflow a no-op** and make **frame extension the sole mechanism** — symmetric on all four sides, never grows the underlying parent so detach always works.
+
+#### The test-driven contract pivot
+
+This is the most important moment of the Part. After several round-trip fix-attempts, the operator said:
+
+> "you have the requirements i asked for. the code is still fucking up. i hate going back and forth with trial and error on this. document the checklist of what i am asking for with requirements right now and just work and write tests until it's done. trial and error is fucking annoying and i've stated my requirements multiple times"
+
+This is a load-bearing operator signal. The pattern: I had been making spot-fixes against the *last* failure mode each turn, which let the system regress on prior fixes. The right response wasn't to be more careful — it was to *write the contract down* and have unit tests pin each rule so regressions couldn't sneak back in.
+
+The contract landed in `CONTAINER_BEHAVIOR.md` as five rules (R1–R5), plus R6 added when the operator caught the banner not resizing with the frame:
+
+> "the banner of a parent should be resized as well when it changes shape"
+
+- **R1**: Frame extends past whichever side a child overlaps, by `overshoot + 16px padding`.
+- **R2**: Other sides do not move.
+- **R3**: The parent's underlying `position` and `style.width/height` never change while a child is being dragged.
+- **R4**: A child detaches when its *center* crosses the baseline edge of any of the four sides.
+- **R5**: Vibrate-shake only triggers on "leaving" drags (the center has crossed a baseline edge); within-bounds drags only resize the frame, no shake.
+- **R6**: The banner (the colored header) is rendered *inside* the frame so when the frame extends, the banner extends with it.
+
+Code shape:
+- `src/lib/containerBehavior.js` — pure functions: `computeOvershoot(container, allNodes)`, `computeLeavingSides(child, parent)`. Both used by tests *and* by the runtime, so they can't drift.
+- `src/lib/containerBehavior.test.js` — 19 unit tests across R1–R5.
+- `src/components/SystemNode.test.jsx` — 2 tests for R6 (banner is a DOM child of `.computer-frame`; CSS var on the frame applies in test render).
+- `src/lib/reflow.js` is now a passthrough (kept around as a stub so callers don't break).
+- `src/components/SystemNode.jsx` renders the header inside `.computer-frame` instead of as a sibling.
+
+Test suite at end of Part: **103 tests passing**. `vite.config.js` got `test: { environment: 'jsdom' }` so component tests can run.
+
+The pivot worked. Once R1–R6 were tests, "this regressed" became falsifiable in seconds instead of a back-and-forth message thread. The same pattern is documented in superfluous-ai Learning 1 / Part 71 — the operator's pushback was a signal to change *the working mode*, not just the working code. The right read of "i hate going back and forth with trial and error" is "stop letting your latest fix erase your earlier fix; pin the rules down with tests."
+
+#### moat.md — the IP protection question
+
+The operator asked:
+
+> "is there any way this can't be stolen? i mean it's all frontend so if someone wanted to, they could just see it or pay for access and then steal it right"
+
+Captured in `moat.md`. The honest answer: a frontend SPA cannot be technically prevented from being copied. The real moats are non-technical (content velocity > server-side state > brand + community > legal). The technical mitigations have a low ceiling: minification + source-map stripping is worth doing for free, server-side puzzles are worth doing when a backend lands anyway, anything beyond that is friction not protection.
+
+The TL;DR for future-me: *don't burn cycles on this until monetization starts*. The codebase is a single-machine prototype; nothing of unique IP value to copy yet.
+
+#### framework.md — the JSON puzzle framework discussion
+
+Triggered by the operator catching a Lesson 4 hole:
+
+> "let's talk about this later in moat.md or something. you populate it. can we talk about how we can make this a framework? for instance, lesson 4, the client can connect to 3 VPSes directly and it will pass, lol. I was thinking about a general framework where anyone can create their own puzzle or system, but the thing is that there needs to be a solid foundation to be able to do that. In the specific case of scenario 4, you can see that a client should not be able to connect to a VPS directly. in lesson 4, the point is to use the load balancer, so while a client can connect to multiple VPSes, in this case, maybe it should not be able to connect to a VPS directly. as I think about this, I kind of think that the puzzle's foundations can be represented with a json file or something, and by that i mean that you could have a component and different detail about it, like its defaults, what it can and can't connect to - like maybe a list of exclude = a component name, or even include = a component name with nested fields like limit = 1 for connecting to only one of that type or something. what i see is a system that can easily be entirely represented by json where people may be able to import or export puzzles. i also see something where the restraints and exclusions for what things are limited to connect to can be allowed but still be wrong, maybe with a guardrails/hints off or something. journal or document updates above in this directory with documents that already exist or new ones. context is 66% full so i want to capture everything. journal this session and also include this prompt in the journal"
+
+Preserved here verbatim because the prompt simultaneously names:
+- A specific bug (Lesson 4 passes with no LB).
+- A specific generalization (puzzles → JSON, components have include/exclude/limit rules per connection target).
+- A specific UX (a guardrails/hints toggle so the constraints can be ignored to *learn from* the wrong answer).
+- A specific work-ordering request (capture the session in journal-style; surface the prompt verbatim; do it now because context is filling up).
+
+The design landed in `framework.md`. Highlights:
+
+- Component types and puzzles both become JSON.
+- Constraints have a three-axis vocabulary: **connection rules** (allow/exclude/include per type), **limits** (min/max per component or edge), **topology requirements** (deferred).
+- Requirements move from JS functions to **named test types with parameters** (e.g. `{ metric: "successRate", op: ">=", value: 0.99 }`). Keeps the framework auditable; avoids a sandboxed-JS rabbit hole.
+- A **guardrails toggle** (on / soft / off) lets a player violate the constraints to discover *why* they exist. Default `on`.
+- A migration path that fixes the Lesson 4 bug TODAY (per-puzzle JS `constraints` field + edge validation in `Canvas.jsx`'s `onConnect`) while leaving the door open for the full JSON pivot later.
+
+The Lesson 4 fix is **not yet shipped** — it's specified in `framework.md` (step 1 of the migration). The right next move is to land that small fix as a forcing function for the connection-rule data shape, before generalizing further.
+
+### Operator messages preserved verbatim (the load-bearing ones for this Part)
+
+1. *"i feel like the computer should visually encapsulate the code and all the PC components"* — kicked off the entire containment UI.
+2. *"you have the requirements i asked for. the code is still fucking up. i hate going back and forth with trial and error on this. document the checklist of what i am asking for with requirements right now and just work and write tests until it's done."* — the pivot from spot-fixes to a written contract + unit tests. Most important message of the Part.
+3. *"the banner of a parent should be resized as well when it changes shape"* — became R6 in the contract.
+4. *"is there any way this can't be stolen? i mean it's all frontend so if someone wanted to, they could just see it or pay for access and then steal it right"* — kicked off `moat.md`.
+5. *The full framework prompt above* — kicked off `framework.md` and surfaced the Lesson 4 design hole.
+
+### What this Part does NOT include
+
+- The Lesson 4 fix (Client cannot connect directly to VPS for that puzzle). Spec'd in `framework.md` step 1; not yet implemented.
+- JSON puzzle loading / import / export. Spec'd in `framework.md`; not yet implemented.
+- Guardrails toggle UI. Spec'd in `framework.md`; not yet implemented.
+- Source-map stripping audit (default Vite behavior covers this; no audit yet).
+- `spec.md` and `research.md` updates — these are stale (describe earlier state) and should be re-synced when the framework changes land.
+
+### What this Part DID ship
+
+- Lessons 2–6 (5 new lessons, 3 sim kinds total).
+- Read/write split edges + per-direction success-rate tracking.
+- The full containment UI: parentNode-based containers, frame extension via CSS vars, sibling scoot, ripple-on-attach, shake-on-leave, center-based detach.
+- `CONTAINER_BEHAVIOR.md` with R1–R6.
+- `src/lib/containerBehavior.js` (pure functions used by both tests and runtime).
+- 103 passing unit tests across simulator semantics, container behavior, and the R6 banner-inside-frame contract.
+- `moat.md` (IP protection conversation).
+- `framework.md` (JSON puzzle framework design + Lesson 4 fix path).
+- This journal entry.
+
+### Next session pickup
+
+1. **Ship the Lesson 4 fix** — `framework.md` migration step 1. Per-puzzle `constraints.connections.client.outgoing.exclude = ['vps']` on Lesson 4. Validate in `Canvas.jsx`'s `onConnect`. Adds the first per-puzzle constraint and forces the data shape into existence.
+2. **Ship the guardrails toggle**, even minimally. With the Lesson 4 fix landed, the toggle is what lets a curious player see *why* the constraint exists.
+3. **Move component metadata's connection rules into `componentTypes.js`** as JS. This is migration step 2 — still JS, just structured like the future JSON. Keeps the shape honest before the JSON pivot.
+4. **Eventually:** JSON puzzle loader, import/export UI, custom puzzle URLs. Migration steps 5–7. Defer until the lessons feel stable and there's a reason to share.
+5. **`spec.md` and `research.md` resync.** Both describe the Part 1 state; they should reflect the 6-lesson progression, the three sim kinds, and the container contract.
+6. **Source-map stripping audit.** Confirm prod build does not emit source maps (Vite default is correct; verify with `npm run build && grep -r "//# sourceMap" dist`).
+
+### The pattern to carry into Session 2
+
+Two operator signals showed up here that map onto patterns from superfluous-ai:
+
+- **"trial and error is fucking annoying"** — when a fix-attempt regresses a prior fix, *stop spot-fixing* and pin the contract down with tests. This is the single highest-ROI mode-switch in a session. Mirrors superfluous-ai Learning 1 / Part 71.
+- **"the client can connect to 3 VPSes directly and it will pass, lol"** — when a puzzle passes via the wrong solution, the bug isn't in the simulator math; it's in the *constraint vocabulary*. Mirrors Part 1's "what counts as served" bug: same shape, one level up the stack. The pattern is to look for the missing first-class concept rather than patch the symptom.
+
+## Session 1 Part 3 — 2026-05-11: pre-implementation design talk for the puzzle framework — chose the "two-stage engine with a tiny predicate interpreter" shape and explicitly enumerated overengineering temptations to NOT take
+
+Same day as Parts 1 + 2. The operator wanted to *talk* through the architecture before shipping the Lesson 4 fix. The framing question was a good one:
+
+> "it feels like this game can be improved - if not done already - to have a central engine that can interpret the JSON puzzle and the setup in the canvas and parse if the characteristics of the canvas pass the rules in the puzzle. is that how it's done now? let's talk about it. i'm a sucker for trying to think about these important decisions beforehand but would love to have a keen callout on overengineering from you too where applicable"
+
+The honest answer: **the engine the operator was asking about already exists.** It's two pure functions glued together in `handleRun`:
+
+1. `simulate(puzzle, nodes, edges) → simResult` — physics. Dispatches on `puzzle.kind` (flow / composition / connectivity).
+2. `evaluatePuzzle(puzzle, simResult) → evaluation` — grading. Runs each `requirement.test(simResult)`.
+
+The split is intentional and good. Physics has different invariants from grading; collapsing them would lose unit-testability. The framework gap is small: **stage 1 already takes structured data and produces structured data; stage 2 takes structured data but uses arbitrary JS functions as the grading predicate.** That JS function is the *only thing* blocking JSON puzzles.
+
+### The framework win — one small change
+
+Replace `test: (r) => ...` with `predicate: { kind, ... }` and add a tiny dispatcher:
+
+```js
+evaluatePredicate(predicate, simResult) → boolean
+```
+
+A switch statement over ~5 predicate kinds (`metric`, `presence`, `edge`, `config`, `simFlag`). Maybe 30 lines total. That's the entire framework primitive. Everything else (JSON files, import/export, guardrails toggle, third-party puzzles) is built on top.
+
+### Design decisions locked in this session
+
+Two operator decisions worth recording so future-me doesn't second-guess them:
+
+1. **`evaluateAt` default = `"run"`.** Edit-time enforcement (red edges, blocked drops) adds UX surface (where the error shows, what cancels the action) and can be added per-puzzle later. Default is cheaper.
+2. **`lesson:` text renders on every failed requirement, always.** Not gated by a guardrails toggle. The toggle doesn't remove the explanation; it only changes whether constraints are gated at edit-time vs. surfaced at run-time. Always-render gives `lesson:` a second job as the hint system — players who want help see *why* a failed requirement matters without needing to find a separate hint button.
+
+### Overengineering temptations actively rejected
+
+The operator asked me to be a "keen callout" on this. The pattern in the framework conversation is that every one of these *sounds* reasonable on its own, which is why naming them now is load-bearing:
+
+1. **"Build a rules engine."** No. Six predicates dispatched by a switch is **not** a rules engine. The moment there's a plugin registry, predicate-composition DSL, pipeline stages, or a JSON-Schema validator for the puzzle file format, we've overshot. Resist the urge to abstract further.
+2. **Collapsing `simulate` + `evaluatePuzzle` into one mega-function.** Tempting because "the engine should do everything." Wrong: physics and grading have different invariants. The simulator can be unit-tested with synthetic graphs; the grader can be unit-tested with synthetic sim results. Collapsing loses that.
+3. **A formal `graphStats.js` submodule.** Don't extract. Counting nodes by type is one loop in the simulator. Making it its own file just adds a seam to keep consistent.
+4. **Pre-computing every possible graph stat.** Don't materialize `nodesByType`, `edgesByEndpoint`, `nodesByConfigPath`, etc. up front. Add each one *when a puzzle actually requires it*. Default to lazy.
+5. **A puzzle-validation pipeline with stages** (lint → typecheck → load → validate → run). No. Load JSON, hand it to `simulate`, hand result to `evaluatePuzzle`. Errors surface where they happen.
+6. **A custom DSL or expression language for predicates** (JSONLogic, Jexl, anything). No. Five kinded objects cover every current puzzle. A DSL means we now maintain a DSL.
+7. **A puzzle authoring tool / GUI.** Not yet. JSON files in a folder is fine for v1. The authoring tool is a v3 problem — after JSON puzzles exist, after third-party imports exist, after enough puzzles have been hand-authored that the pain point is real.
+
+The discipline these encode: **add abstractions on the second example, not the first.** The Lesson 4 fix is the first example of a `presence` predicate. The vocabulary is being introduced for it. We don't add the second predicate kind until a second puzzle needs it.
+
+### The architecturally correct sequence
+
+1. Ship the Lesson 4 fix in current JS shape (`nodesByType` in sim results, `lesson:` rendered on failed reqs, a third requirement on Lesson 4).
+2. **Introduce `evaluatePredicate` and use it for the new `hasLB` rule as a proof-of-shape.** Both `test: (fn)` and `predicate: { kind, ... }` coexist; the new shape is opt-in per requirement.
+3. (Later) Migrate remaining requirements puzzle-by-puzzle. Every migration deletes JS, adds declarative data.
+4. (Later) Move puzzles to `.json` files once all requirements are predicates.
+5. (Later) Loader, import/export, guardrails toggle.
+
+The operator chose steps 1+2 bundled into this session's delivery: ship the fix AND introduce one declarative predicate so the framework primitive exists end-to-end before extending. Reason: a working proof-of-shape with one real puzzle is more valuable than a JS-only fix that we then have to revisit.
+
+### The operator's framing message — preserved verbatim
+
+> "it feels like this game can be improved - if not done already - to have a central engine that can interpret the JSON puzzle and the setup in the canvas and parse if the characteristics of the canvas pass the rules in the puzzle. is that how it's done now? let's talk about it. i'm a sucker for trying to think about these important decisions beforehand but would love to have a keen callout on overengineering from you too where applicable"
+
+The signal: the operator is willing to invest in design conversation before code. The right response is to **answer honestly about what already exists**, *not* to enthusiastically agree there's an engine to build. The codebase already had the right shape; the framework conversation just needed to identify the one small piece that was missing. That's a higher-leverage answer than agreeing to build something bigger.
+
+### Operator-decision log (for future sessions)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Engine architecture | Two-stage (sim → grade), keep as-is | Already exists; the split is correct |
+| Predicate vocabulary | 5 kinds: `metric`, `presence`, `edge`, `config`, `simFlag` | Covers every current puzzle; expand on demand |
+| `evaluateAt` default | `"run"` | Edit-time enforcement is more UX surface; defer |
+| `lesson:` rendering | Always show on failed reqs | Doubles as hint system; not gated by guardrails toggle |
+| Graph stats location | Inside sim result (`nodesByType`) | Sim already iterates nodes; one seam not two |
+| JSON puzzle migration | After every requirement is a predicate | Mechanical conversion, not a rewrite |
+| Third-party imports | Deferred to v2 | v1 win is operator-authored puzzles; trust/curation is a later problem |
+| Authoring tool / GUI | Deferred to v3+ | JSON files in folder is fine until pain is real |
+
+### Next: implement steps 1+2
+
+Tracked as TaskCreate IDs 45–51 in this session. The fix is small (~6 files touched, ~50 LOC added) and the new predicate shape lands as a real example, not as theory.
+
+## Session 1 Part 4 — 2026-05-11: redesigned Lesson 2 — Router is now a wired component (not a container) with live CIDR + per-device IP display; added a deterministic LAN-IP module; reused the framework primitives (`presence` predicate + `lesson:` text) for the new requirements
+
+Same day as Parts 1–3. With the framework primitives shipped in Part 3, the natural next move was to dogfood them on a real lesson. The operator's framing:
+
+> "lesson 2 is good but i think a router should be a component that sits on its own and has connections to/from components, and ass components get added, its box contains info on what is connected to it + a LAN ip address that is based on a default CIDR, and each component gets a random IP address that does not overlap like a real system. carve this out with tests and ensure it works with all the new stuff we have"
+
+Two simultaneous asks: change the Router's *interaction model* (container → wired node) AND introduce a real *networking model* on top (CIDR, IP assignment, no overlaps). Plus the operator's standard requirement: tests, and don't regress the framework work from Part 3.
+
+### Why the Router-as-container model was wrong
+
+Containers in this codebase are reserved for *physical composition*: a Computer holds CPU/RAM/Disk/Program because those things are literally inside the box. The Router did NOT fit that model — devices on a LAN are not "inside" the router; they're *connected* to it. The container shape was a UI shortcut that happened to look right ("everything in the same box is on the LAN") but encoded a wrong mental model.
+
+The wired model is more faithful: a Router is just a node with handles. A device is on the LAN iff there's an edge between it and the Router. That edge is the LAN membership. It's also the thing the player wires *because that's how you join a network in real life*.
+
+Also: when more advanced lessons need to model two LANs connected by an uplink, or a router-of-routers, or a device that's plugged into two LANs (NIC bonding), the container model breaks down hard. Wired model handles all of those without special-casing.
+
+### Pedagogically, the new model TEACHES more
+
+The container model said "stuff inside the box is on the LAN." The wired model says **"each Router hands out an IP from its CIDR to every device that connects to it, and you can see the IPs live as you wire things up."** That's the actual networking lesson. Real DHCP, real subnets, real "two devices on different LANs can have the same IP because they're separate subnets."
+
+The CIDR is editable per-Router (defaults to `192.168.1.0/24`). The Router occupies `.1`. Devices get `.2`–`.254`. IPs are deterministic — hash(deviceId) → host byte with linear-probe collision handling — so they don't flicker as the player drags things around, and tests have stable expectations.
+
+### The shape that landed
+
+**New module — `src/lib/lanIp.js`:**
+- Pure function: `assignLanIps(nodes, edges) → Map<nodeId, { ip, cidr, routerId }>`.
+- Deterministic. Each router gets its own pool — cross-router IP collisions are FINE (correct real-world behavior; two home routers can both hand out 192.168.1.42).
+- Edges treated as undirected for membership. Wire direction doesn't matter.
+- Malformed CIDRs cause that router to be silently skipped (no crash, no thrown error).
+- 11 unit tests in `src/lib/lanIp.test.js`.
+
+**`src/lib/componentTypes.js`** — Router changes:
+- `container: true` removed; `nodeStyle: { width: 760, height: 360 }` removed.
+- `hasInput: true, hasOutput: true` added.
+- `cidr: '192.168.1.0/24'` added to defaults.
+- CIDR added as an editable text prop.
+
+**`src/lib/simulator.js`** — composition sim:
+- Now takes `edges` (had only taken `nodes`).
+- LAN membership: replaced `routerIds.has(c.parentNode)` with edge-adjacency check via `assignLanIps`.
+- `perNode` stamps LAN info on routers (cidr, ip, devices list) and on connected devices (lanIp).
+- Renamed `computersInRouterCount` / `phonesInRouterCount` to `computersOnLanCount` / `phonesOnLanCount` — language matches the new model.
+
+**`src/lib/puzzles.js`** — Lesson 2:
+- `initialNodes`: Router as a normal-sized free node + Phone + WebServer (all floating).
+- 4 requirements, mixing primitives:
+  - `hasRouter` — declarative `predicate: { kind: 'presence', type: 'router', min: 1 }`.
+  - `computerOnLan` / `phoneOnLan` / `webServerHosted` — legacy `test:` reading the new sim fields.
+- Every requirement has a `lesson:` string. Lesson 2 became the second puzzle using `presence` (Lesson 4's `hasLB` was the first).
+
+**`src/components/SystemNode.jsx`:**
+- New special-case branch for `data.type === 'router'`: header + body with CIDR/IP/SSID + live device list (each row shows device label + assigned IP).
+- Computer header: appends LAN IP when wired (alongside the cores/RAM/disk line).
+- Phone: surfaces IP via the existing `simSummary` path (new `phone` kind).
+
+**`src/App.css`:**
+- `.router-node`, `.router-meta`, `.router-cidr`, `.router-ssid`, `.router-devices`, `.router-device-row`, `.router-device-label`, `.router-device-ip`, `.router-no-devices`, `.computer-lan-ip` — monospace for IP/CIDR text, dim/dashed separator above the device list.
+
+### Tests — 128 passing (was 114)
+
+Net +14:
+- **+11 new** in `src/lib/lanIp.test.js`: parseCidr basics + malformed; assignLanIps empty case, router gets .1, devices in .2-.254, determinism, no-overlap with 30 devices, undirected edges, custom CIDR, two-routers each with their own pool, malformed CIDR skipped.
+- **+5 new** in `src/lib/puzzles.test.js`: Lesson 2 canonical pass, missing-router fails on `hasRouter`, computer-not-wired fails on `computerOnLan`, edge direction doesn't matter (router → device counts), sim result exposes CIDR + device IPs.
+- **−2** old Lesson 2 tests (parentNode-based; replaced).
+
+### A regression that got caught and fixed mid-implementation
+
+After wiring everything up, the test run failed 11 tests in `containerBehavior.test.js`. The failures looked like `computeOvershoot` returning `null`. The root cause: those tests had been written against a Router-as-container parent (`container('p', 'router', ...)`) since the Router *used to* be the canonical wide container. With `container: true` removed from Router, the tests' parent type no longer had container-ness, and `computeOvershoot` correctly returned null for non-containers.
+
+Fix: swapped `'router'` → `'computer'` in the test file (6 occurrences via `replace_all`). One-character semantic change; tests came back green.
+
+The pattern worth noting: **when removing a property from a component type, grep the test files for that type name.** The container-behavior tests were calibrated against the old shape and silently kept working only because the property accidentally still matched. The right fail-fast mode would have been if I had inspected the test file upfront — but the suite caught it the moment I ran, which is exactly what the R1-R6 contract investment was for.
+
+### The framework primitives held up
+
+This was the first puzzle redesign *after* Part 3's framework introduction. Concrete confirmation that the primitives are correctly scoped:
+
+- `nodesByType` was already being computed for every sim result, so `presence: { type: 'router', min: 1 }` worked out of the box — no new framework code needed.
+- `lesson:` text rendered on all four Lesson 2 requirements without any UI changes — the path from puzzle → evaluation → checklist was already wired.
+- Both predicate-shaped and legacy `test:`-shaped requirements coexist in the same puzzle. The mixed shape is the right migration strategy; we don't have to convert every requirement at once.
+
+This validates Part 3's overengineering-resistance: the smallest possible framework primitive (one switch dispatcher + one stat field) is in fact enough to express a real puzzle's worth of constraints. No DSL needed. No new architectural layer needed.
+
+### Operator messages preserved verbatim (the load-bearing one this Part)
+
+> "lesson 2 is good but i think a router should be a component that sits on its own and has connections to/from components, and ass components get added, its box contains info on what is connected to it + a LAN ip address that is based on a default CIDR, and each component gets a random IP address that does not overlap like a real system. carve this out with tests and ensure it works with all the new stuff we have"
+
+The "carve this out with tests" + "ensure it works with all the new stuff we have" framing is a direct application of the lesson from Part 2: pin the contract down with tests so trial-and-error doesn't sneak back in, AND verify the new architectural primitives still hold under a real change. Both got followed.
+
+### What this Part does NOT include
+
+- The container behavior tests use `'computer'` as the parent type. If a future container type is added (eg. a `Rack` for grouping servers), those tests will need a per-container-type parameterization. Acceptable for now.
+- The Router doesn't yet support an upstream / WAN connection. The "internet" is still implicit in the connectivity-sim puzzles (Lessons 3+). Bridging the two — "your home Router has a WAN IP that the wider internet can reach you on" — would be a meaty future lesson.
+- IP-conflict detection within a router pool: not possible to trigger today (the linear-probe allocator can't collide unless you exceed 253 devices). If we add static-IP overrides on devices later, the allocator will need a conflict-detection mode and a UI warning.
+- The Computer is still a container (Lesson 1 mechanics unchanged). Hot take: should Computers also become "wired" — i.e., the player drags edges from CPU/RAM/Disk to a Computer rather than dropping them inside it? Probably NO. Composition (a box made of physical parts) and networking (devices that talk over a wire) are different concepts; mixing them would lose pedagogical clarity. Keep the model where the metaphor fits.
+
+### Next session pickup
+
+1. **The Lesson 4 fix is fully shipped + tested**; the framework primitives have been dogfooded on two real puzzles. Reasonable to stop "framework work" here and move back to content.
+2. **Lesson 7 candidate: a "two LANs joined by a Router uplink" lesson** that builds on the new wired-LAN model and introduces NAT / port forwarding. The pedagogical payoff is large; the simulator work to support it is modest (uplink edge between routers, mark devices as reachable through their router's WAN side).
+3. **`spec.md` is being updated this session too** — the v0-only doc is misleading; bringing it to current state.
+4. **Eventually:** migrate the remaining legacy `test:` requirements to declarative `predicate:` per Part 3's step 3. Low priority; the mixed shape is fine.
+
+## Session 1 Part 5 — 2026-05-11: UX overhaul — floating edges, endpoint dot/arrow toggles, drag-to-trash, ComponentInfo top overlay, inline reading expander. Two operator pushbacks that mattered: "you should have tests to catch these things" + a wife-test that surfaced Lesson 3 confusion. Test count went from 142 → 204 (+62). LAN-bind added so the user can test from other devices.
+
+Same long day as Parts 1–4. This Part is the *UX* pass that turned the operator's wife into a viable second pair of eyes — she found Lesson 3 confusing, the bug-via-confusion pattern surfaced a real architectural decision (the bottom info pane), and several visual bugs got pinned down with tests instead of patches.
+
+### Floating edges + perimeter attach
+
+Operator: *"a computer does not have connection 'nodes' and a router should ideally have its whole perimeter 'attachable' bottom where arrows can just attach to it, not just two dots"*
+
+Two issues bundled in that sentence:
+
+1. The **Computer was actually unwireable** — its componentType had `hasInput: false, hasOutput: false`. Tests passed because they constructed edges programmatically; the *UI* had no handles to drag from. I shipped Lesson 2 (Part 4) without verifying this manually.
+2. The other nodes had **fixed left/right handle dots**, so edges visually anchored at the dot positions regardless of geometry — looking weird when the edge approached a node from above or below.
+
+Fix: **React Flow's floating-edges pattern**.
+
+- `src/lib/edgeGeometry.js` (new, pure): `getFloatingEdgeEndpoints(sourceNode, targetNode)` returns the perimeter intersections of the center-to-center line with each node's bounding rect. Also `exitSide(node, towardPoint)` returning `'top' | 'right' | 'bottom' | 'left'` for the Bezier control-point picker. 19 unit tests.
+- `src/components/FloatingEdge.jsx` (new): custom React Flow edge that reads source/target nodes from the store, computes endpoints geometrically, and passes the correct `sourcePosition`/`targetPosition` to `getBezierPath` so the curve's tangent at the endpoint is correct — which means the arrowhead orients correctly (the bug the operator caught next, *"arrow on lines only look good pointing/contact with the top, every other side it is under the component"* — root cause was that `getBezierPath` defaults to `Bottom`/`Top` for source/target positions; without passing the real exit side, every curve approached the target from above and the arrow always pointed down).
+- `src/components/Canvas.jsx`: registered `floating` as the default edge type. Set `connectionMode="loose"` so drag-start can come from either side. Added `isValidConnection` that enforces `componentTypes[source].hasOutput && componentTypes[target].hasInput`, so the user can't draw `Database → Client` accidentally.
+- `src/components/SystemNode.jsx`: added a `FloatingHandles` helper that renders **one handle per side** (top/right/bottom/left), source if `hasOutput`, target if `hasInput`. Computer gets `hasInput: true, hasOutput: true` (fixes the unwireable bug). Handles are invisible by default; visible on node-hover; bigger on direct hover. Drag affordance everywhere; clutter nowhere.
+- App.jsx's `displayEdges` sets `markerStart`/`markerEnd` per-edge based on the new `arrows: { source, target }` data so React Flow registers the markers.
+
+### Endpoint dot toggles for arrow direction
+
+Operator (significant reframe): *"endpoints of the lines should be clickable to toggle type, of which the line type should update. A - B, I click dot on right side = pointer triangle on B, line updates to move right. Click again, pointer is removed."*
+
+This introduced a new **direction axis** on every edge — orthogonal to the existing R/W kind axis (which stays unchanged for Lesson 6). New data shape:
+
+```js
+edge.data.arrows = { source: false, target: true }  // default = A → B
+```
+
+Four permutations: none / source-only / target-only / both. The four are clickable at the endpoint dots — outlined dot = "no arrow on this side" (click to add); when an arrow is present, the dot disappears and the arrow IS the visual (click in its hot-zone to remove).
+
+CSS keyframes for animation direction:
+- `target` only → dashes flow source→target (`edge-flow-forward`)
+- `source` only → dashes flow target→source (`edge-flow-reverse`)
+- both → two stacked paths animate opposite ways (visible left-and-right motion)
+- neither → static, no animation, no arrows
+
+Body click still cycles R/W. The two axes coexist on the same edge: arrowhead direction + color/label.
+
+### "Either-or" rule, and the operator's testing pushback
+
+When I first shipped the endpoint dots, both the dot AND the arrowhead rendered simultaneously when arrows were on. Operator: *"the line arrow and dot should not be present at the same time. either or."*
+
+Fix: when arrows[side] is true, the dot button renders with class `with-arrow` (transparent, invisible, but still a click hot zone). When false, `as-dot` (visible outlined circle). Extracted `endpointClassName(boolean) → string` as a *pure function* exported from `FloatingEdge.jsx`, specifically so it's unit-testable — `src/components/FloatingEdge.test.js` covers all four permutations of the rule.
+
+The pushback that mattered came earlier: *"you need to have tests to catch these things. i shouldn't have to point this out."* That was after I shipped two visual bugs in a row (right handle invisible on Computer; line endpoints inside the Computer's visible perimeter). The pattern: I'd been writing tests for *behavior* but not for the *visual contract*. Three test files now pin that contract down:
+
+- **`src/components/containerVisualBounds.test.js`** — reads `App.css` as text, asserts:
+  - `.computer-frame` has `box-sizing: border-box` (so the 2px border doesn't push the visible edge past the React-Flow bounds)
+  - `.system-node` has `box-sizing: border-box` (same root cause, 1px border)
+  - `.floating-handle:hover` does NOT contain a `transform:` declaration (which would clobber React Flow's per-side handle positioning)
+- **`src/components/SystemNode.test.jsx`** — Computer renders exactly 8 handles (4 source + 4 target); one per side; handles are siblings of `.computer-frame`, not children, so the frame can't occlude them.
+- **`src/components/FloatingEdge.test.js`** — `endpointClassName` returns mutually exclusive classes for true/false; tested across all four permutations.
+
+These tests are the model going forward: **every visual change ships with a contract test that pins the relationship between underlying state and rendered output.** Cheap (jsdom only, no real layout), and catches the bug class that just bit.
+
+### Drag-to-trash with stationary-cursor relocate
+
+Operator initial ask: *"able to drag component to trash to delete it."*
+
+Operator iteration: *"trash on bottom right is not that visible make it a trash icon that pops up that floats nearby that people can drag to."*
+
+Operator refinement: *"let's actually just have it appear and have it stationary and not move until the overlap is about two seconds and the cursor is not moving."*
+
+Operator final correction: *"the trash icon must not overlap with the component when it first shows up."*
+
+The final behavior, in order:
+1. At `onNodeDragStart`, query the dragged node's `getBoundingClientRect()` via the DOM (`[data-id="<nodeId>"]`).
+2. Precompute four slot positions OUTSIDE that rect (one per corner direction, with bin-size accounting so the bin is fully outside on all four sides regardless of slot).
+3. Render the bin at `trashAnchors[trashSlot]` using absolute `left`/`top`. The bin stays put for the rest of the drag — cursor movement does NOT update it.
+4. Relocate effect depends on `[trashHover, lastMoveAt]`: each cursor movement bumps `lastMoveAt`, re-running the effect and clearing the 2s timer. Only 2s of continuous overlap + stationary cursor advances `trashSlot` to the next position.
+
+The last iteration (anchor-to-node-bounds) caught a real overlap: with a 340×220 Computer and `cursor + (100, 100)` offset, if the cursor was anywhere on the upper-left of the Computer, the bin landed inside it. DOM-query approach removes the dependency on cursor position entirely.
+
+### ComponentInfo pane (the wife-test fix)
+
+Operator: *"i had my wife test and she found lesson 3 to be really confusing. i think that understanding the component selected and how it may be used would allow user to learn but also see how it connects."*
+
+The Lesson 3 chain (Visitor → Domain → DNS Record → VPS) requires understanding that *each link's "points to" value must match the next link's IP*. The canvas alone doesn't make that obvious — it looks like four boxes connected by lines, with no visible cue that the DNS Record's IP must match the VPS's IP.
+
+New `src/lib/componentInfo.js` carries per-type pedagogical info: `description`, `usage`, `connects`, optional `realWorld`. Lesson 3 entries got the most careful copy — the DNS Record entry explicitly calls out the matching constraint that breaks every Lesson 3 attempt.
+
+New `src/components/ComponentInfo.jsx` renders these in labeled sections. Initially placed as a full-width bottom row below `.app-body`. Operator pivot: *"i think the pane should be within the canvas at the top"* — moved into a `.canvas-info-overlay` absolute-positioned at `top: 12px, left/right: 12px` inside `.canvas-wrapper`. Semi-transparent background with backdrop blur so it reads as a floating panel over the canvas.
+
+Tests: 19 contract tests (one per componentType) verifying `info.description`, `info.usage`, `info.connects` are all populated; 1 reverse-direction test (no typo'd keys in componentInfo that don't map to a real type); 5 ComponentInfo render tests (placeholder when no selection, sections present when selected, realWorld conditional on data, header dot uses type's color).
+
+### Inline reading expander (replaces modal)
+
+Operator: *"the lesson that pops up on each page when you first select it, it should be accessible from the window for review somehow, maybe as text under the lesson name on the page where you can expand the whole thing from a slug."*
+
+Replaced the modal `ReadingOverlay` (deleted the file) with an inline `Read full lesson ▸` toggle in `PuzzleBar`, rendered right below the blurb. The blurb stays as the slug. Click expands the full paragraphs inline; click again collapses. First-visit auto-expands (preserved via the existing `readingShownIds` localStorage); subsequent visits collapse. The canvas stays visible during reading — no more modal blocking.
+
+`src/components/PuzzleBar.test.jsx` (new, 7 tests): slug renders; toggle appears when background exists; toggle is absent when not; collapsed state has no inline element; expanded state has all paragraphs; toggle copy reflects state; clicking invokes the callback.
+
+### Bonus operator interactions
+
+- **Drag-to-trash menu addition.** Computer's `⋯` menu gained `+ Add CPU + RAM + Disk` action. Palette's Computer item gained a `prepopulate` checkbox that does the same thing on drop. Both call into the same pure helper `prepopulateComputerHardware` in `graph.js`. Initial version had the children spilling 70px past the Computer's right edge (triggering the overshoot frame extension that hid the right handle). Fixed by auto-resizing the Computer to fit (constants pulled out: `PREPOP_PADDING`, `PREPOP_CHILD_W`, `PREPOP_CHILD_H`, etc.). 3 new tests assert "children fit inside (possibly enlarged) Computer bounds."
+- **Ports on Web Server + Router.** `defaultsFor()` now materializes function-valued defaults per instance, so `webServer.defaults.port = randomEphemeralPort` produces a fresh value (range 49152–65535) for every new Web Server. Router has fixed port 80 (admin UI). Dot-menu "Listening port" section offers fast-switch to common ports (80/443/3000/8080); property panel handles custom values. 2 new tests for the function-default behavior.
+- **Direction-aware connect validation.** `isValidConnection` callback enforces `source.hasOutput && target.hasInput` so the user can't draw nonsense like `Database → Client` even in loose connection mode.
+- **LAN bind.** Operator: *"bind the app to 0.0.0.0 so i can access from LAN"*. Added `server.host: '0.0.0.0'` to `vite.config.js`. Operator was probably testing from a phone or another laptop to mirror the wife-test setup.
+
+### Operator messages preserved verbatim (the load-bearing ones this Part)
+
+1. *"a computer does not have connection 'nodes' and a router should ideally have its whole perimeter 'attachable' bottom where arrows can just attach to it, not just two dots"* — surfaced the unwireable-Computer bug AND triggered the floating-edges work.
+2. *"arrow on lines only look good pointing/contact with the top, every other side it is under the component"* — getBezierPath default control-point positions were always Bottom/Top; arrows always pointed down. Fixed by computing `exitSide` and passing as `sourcePosition`/`targetPosition`.
+3. *"endpoints of the lines should be clickable to toggle type, of which the line type should update."* — added the per-side arrows axis.
+4. *"the line arrow and dot should not be present at the same time. either or."* — extracted `endpointClassName` as a pure function specifically to make this rule unit-testable.
+5. *"you need to have tests to catch these things. i shouldn't have to point this out."* — the meta-feedback that shifted my testing posture. Every visual change now ships with a contract test.
+6. *"i had my wife test and she found lesson 3 to be really confusing."* — pedagogical signal that drove the ComponentInfo pane and the Lesson 3 copy work.
+7. *"the lesson that pops up on each page when you first select it, it should be accessible from the window for review somehow."* — replaced the modal with the inline expander.
+
+### What this Part DID ship
+
+- Floating-edge system: 19 pure tests (geometry + sides) + the FloatingEdge component itself.
+- Per-side handles on every node + 6 SystemNode handle-structure tests.
+- Arrows-direction-axis with click-to-toggle endpoint affordance + 7 either-or tests.
+- Drag-to-trash with anchor-to-node-bounds + 2s stationary-cursor relocate.
+- Computer prepopulate auto-resize + 3 bounds-fit tests.
+- Web Server / Router ports + 2 function-default tests + dot-menu fast-switch.
+- ComponentInfo pane (now top overlay in canvas) + 20 info-contract tests + 5 render tests.
+- Inline reading expander replacing the modal + 7 PuzzleBar tests.
+- LAN-bind in vite.config.js.
+- 3 visual-bounds CSS contract tests (the model for catching the class of bug that bit in this Part).
+- Test count went from 142 (end of Part 4) → 204. Net +62.
+
+### The discipline this Part encoded
+
+The wife-test + the "you need tests" pushback together describe a single pattern: **the operator is providing a more rigorous adversary than I was generating internally.** Every time I shipped a change without a test, the regression got found by a human within minutes. The fix wasn't to be more careful — it was to lower the cost of catching regressions automatically. The three CSS contract tests in `containerVisualBounds.test.js` are the cheapest possible insurance against the bug class, and they paid for themselves before I finished writing them.
+
+Going forward: every visual change ships with a test pinning the relationship between state and presentation. Operator can stop being the regression detector.
+
+### Next session pickup
+
+1. **Migrate remaining legacy `test:` requirements to `predicate:`** — backlog from Part 3. Low priority but mechanical.
+2. **JSON-puzzle loader** — Step 6+ of the framework.md migration. Defer until lessons feel stable.
+3. **A WAN model** — bridging the Lesson 2 LAN with Lesson 3 connectivity (NAT, port-forward). Big payoff, medium sim work.
+4. **Lesson 7 design** — operator hasn't picked the topic yet. Candidates: two LANs with uplink, scaling beyond a single region, message queues.
+5. **`spec.md` resync** — this session's changes are not yet in spec; bringing it current is on the doc-update queue alongside this journal entry.
+
+## Session 1 Part 6 — 2026-05-12: default edge direction is bidirectional + root-caused the marker-asymmetry bug to SVG `orient="auto"`. Fix: render our own marker def with `orient="auto-start-reverse"`. Test count 204 → 207.
+
+Operator: *"the default direction for a line between components is bidirectional which also means there must be a directional arrow. also clicking left/right arrows at each endpoint on the line produces different line animations. should be the same"*
+
+Two asks bundled — one was a default change, the other was a real bug I had been writing off as "they probably look symmetric, are they not?"
+
+### The asymmetry I'd been ignoring
+
+When you turn on the source-side arrow only, the arrowhead points the same direction as the target-side arrow — both arrowheads visually point "—►" (toward the target end of the path). That's not a mirror of target-only; that's both arrows pointing the wrong way.
+
+Root cause: React Flow's `MarkerType.ArrowClosed` registers SVG markers with `orient="auto"`. `orient="auto"` rotates the marker to follow the path's tangent direction at the endpoint. The tangent direction at BOTH endpoints points the same way (source→target along the curve). So marker-start and marker-end render identically-oriented arrowheads. They look the same because they ARE the same orientation, just at different positions.
+
+The SVG2 attribute that solves this is `orient="auto-start-reverse"` — same marker definition, but auto-flipped 180° when used as marker-start. Modern browsers support it; React Flow's built-in markers don't use it.
+
+Fix: stop using React Flow's `MarkerType` registration. Render an SVG `<marker>` def inside the `FloatingEdge` component itself, per-edge (each edge gets its own marker so per-edge stroke color carries through to the arrowhead fill). The single marker definition now serves both ends, flipping automatically for marker-start. Source-only is now a true visual mirror of target-only.
+
+### Cleanups that fell out
+
+- Removed `MarkerType` import from both `Canvas.jsx` and `App.jsx`.
+- Removed the per-edge `markerStart`/`markerEnd` registration from `App.jsx`'s `displayEdges`. App.jsx now only passes stroke color + labels; the arrow visual is owned by FloatingEdge.
+
+### Bidirectional default
+
+Trivial-looking change with one architectural implication: the player now sees BOTH directions of flow on every freshly-drawn edge by default. They commit to one direction by clicking an endpoint dot to remove that side's arrow. Previously the default was target-only (one-way A → B), and the player had to learn that the source endpoint had a different dot to add the reverse arrow.
+
+Bidirectional-by-default also makes the "either or" rule (Part 5) easier to grok: from a starting state where both dots show as arrows, you remove the arrows you don't want.
+
+Changed in two places:
+- `handleConnect` in `Canvas.jsx` — new edges from drag.
+- `arrowsOf` fallback in `FloatingEdge.jsx` — covers legacy edges that don't carry an `arrows` field.
+
+### Tests +3
+
+In `FloatingEdge.test.js`:
+- `arrowsOf(undefined) === { source: true, target: true }`.
+- Explicit `data.arrows` is respected when present.
+- The default has both arrows on AND they're equal — the symmetry pin. Catches any future change that breaks "default has at least one arrow."
+
+### The pattern this entry encodes
+
+When the operator says "X is different from Y, they should be the same" — and I think they should already be the same — the right move is to look harder, not write it off. The marker-asymmetry was a real SVG2-attribute bug, and the only way I'd have caught it without operator pushback is to actually look at the rendered SVG. From here on, "two things should be symmetric but the operator says they're not" gets a DOM-level audit before I assume perception.
+
+### Next session pickup (continued from Part 5's list)
+
+In addition to the items at the end of Part 5:
+
+6. **Solution button** — operator is asking next for a "fill the canvas with a working solution" button. Each puzzle defines a `solution()` returning the passing graph; a button in PuzzleBar loads it. The bigger win is test coverage: every solution can be unit-tested to actually pass evaluation, locking down "the puzzle's intended answer still works." Implementing alongside this journal entry.
+
+## Session 1 Part 7 — 2026-05-12: research-only session — surveyed FAANG system design interview landscape, discovered two existing simulator-for-SDI tools (paperdraw.dev, SyDe). No code change. Material captured in research.md; this entry is the project-level summary + decision state.
+
+The operator's framing: *"do extensive research on interview questions for google system design and talk to me about what we may be able to add, i want to try to add a comprehensive real world puzzle that is sophisticated enough that this can be used by FAANG interviewers to use at an interview. document and research and then let's talk."*
+
+Two related questions came along the way: ([1](https://paperdraw.dev/)) is anyone already doing this, and ([2](https://www.hellointerview.com/learn/system-design/in-a-hurry/delivery)) what does a FAANG-grade puzzle actually need to capture.
+
+### Findings worth surfacing at the project level
+
+1. **Two existing tools cover this space.** [paperdraw.dev](https://paperdraw.dev/) is browser-based, free, ships with queues + CDNs + object storage + failure injection + pre-built YouTube / WhatsApp / Uber examples. [SyDe.cc](https://syde.cc/) is similar but oriented at cloud architects (named AWS/Azure/GCP components) with AI-assisted optimization. Both are real direct competition for anything we ship in the FAANG-prep direction. We need to either ([a](https://paperdraw.dev/)) deliberately compete with breadth or ([b](https://www.hellointerview.com/learn/system-design/in-a-hurry/introduction)) deliberately complement with depth-of-pedagogy.
+
+2. **The modern FAANG SDI framework is well-defined** — see [Hello Interview's "System Design in a Hurry"](https://www.hellointerview.com/learn/system-design/in-a-hurry/delivery). Five stages: Requirements → Core Entities → API → Data Flow → High-Level Design → Deep Dives. Our auto-graded puzzle covers only the high-level-design step. Three of the five stages (Requirements, API, Data Flow) happen *before* anyone touches the canvas. We can support them visually but can't auto-grade them.
+
+3. **The evaluation rubric is conversation-driven** — see [Design Gurus' rubric writeup](https://designgurus.substack.com/p/faang-system-design-interviews-by). Four dimensions: Structured Problem-Solving, Technical Depth, Trade-off Reasoning, Communication. Auto-grading can prove a system *works*; it can't prove the candidate *defended their choices*. The right architectural read is "the simulator is a shared whiteboard the interviewer + candidate use together," not "the puzzle replaces the interview."
+
+4. **Most asked SDI questions are stable** ([System Design Handbook 2026 list](https://www.systemdesignhandbook.com/guides/system-design-interview-questions/), [Google-specific list](https://www.systemdesignhandbook.com/blog/google-system-design-interview-questions/)): Twitter / Newsfeed, YouTube, Uber, WhatsApp, Google Drive, URL Shortener (we have this!), Google Search, GFS-style distributed storage, Rate Limiter, Web Crawler. The top 12 list is unchanged from prior years; AI/ML system design questions are growing as a new category.
+
+5. **Level expectations move significantly** — see [Design Gurus' level guide](https://designgurus.substack.com/p/system-design-for-new-grad-vs-l5). Same answer scores strongly at L3 / new grad and gets downleveled at L6 / staff. Staff candidates are expected to volunteer failure modes, operational cost, multi-region considerations without being asked.
+
+### What we'd need to add to support a FAANG-grade puzzle
+
+**Components missing:**
+- Message Queue (async fan-out)
+- Worker / Consumer (drain queue, process async)
+- CDN (geographic edge cache; latency-by-region modeling)
+- Search Index (eventually-consistent read path)
+- Object Storage (bandwidth-bound, not RPS-bound)
+- Sharded Database (partition keys, hot shard awareness)
+- API Gateway (sits in front of LB conceptually)
+
+**Simulator extensions missing:**
+- Multiple workload types per puzzle (reads / writes / search / media all on the same canvas)
+- Async paths (write returns 202 before queue drain completes)
+- p50 / p99 latency (currently only mean)
+- Failure injection (kill primary DB, watch downstream)
+- Replication lag (read-your-writes consistency)
+- Fan-out (one write triggers N downstream actions)
+- Geographic distribution (multi-region replication)
+
+**UX mode question (still open):**
+- Sandbox mode vs multi-phase puzzles. Multi-phase is the cheaper add to our existing predicate framework: a single puzzle has phases (steady state → 10x spike → failure mode → optimization), each phase has its own requirements. Captures FAANG's iterative-deep-dive shape without introducing a new "free exploration" mode.
+
+### Decision state going into next session
+
+Operator's answers to the three framing questions I posed:
+
+1. **Goal = both** "FAANG-interview compatible" AND "ambitious puzzles signaling the platform is serious."
+2. **Strategy = compete** with paperdraw.dev. Match their breadth (queues, CDNs, failure injection) rather than just complement on pedagogy.
+3. **Sandbox vs multi-phase** — operator wants clarification before deciding. To be discussed.
+
+Implication: compete + both goals = the most work. We need the components + simulator extensions paperdraw.dev has, AND we keep our pedagogical curriculum on top. That's a real commitment — probably 2–3 sessions of focused infrastructure work before the first FAANG-grade puzzle (Lesson 7) can ship.
+
+### Recommended Lesson 7 (still my recommendation; pending operator confirmation)
+
+**"Scale the URL Shortener."** Reuses Lesson 5's setup. Adds Queue + Worker + CDN + Analytics DB. Multi-phase: steady state → 10x spike → 100x spike → primary DB failure. Lower complexity than Twitter Newsfeed, but exercises all the infrastructure we need to build anyway. Twitter Newsfeed becomes Lesson 8, reusing everything Lesson 7 lays down.
+
+### What this Part DID ship
+
+- Research material into [`research.md`](research.md) (new top-level section "FAANG system design interview compatibility — research"): the SDI framework, the rubric, top-12 question list, scoring of our platform vs paperdraw.dev / SyDe, the components we'd need, the three candidate puzzles, the puzzle-vs-sandbox question, and honest competitive read.
+- This journal entry capturing decision state and operator's answers to the three framing questions.
+- No code changes.
+
+### Sources
+
+- [Google System Design Interview Questions (2026) — System Design Handbook](https://www.systemdesignhandbook.com/blog/google-system-design-interview-questions/)
+- [Google System Design Interview: What Changed, What They Ask — Design Gurus Substack](https://designgurus.substack.com/p/googles-system-design-interview-in)
+- [System Design Delivery Framework — Hello Interview](https://www.hellointerview.com/learn/system-design/in-a-hurry/delivery)
+- [What FAANG Expects at Each Level in System Design Interviews — Design Gurus Substack](https://designgurus.substack.com/p/system-design-for-new-grad-vs-l5)
+- [System Design Interview Questions: Top 40 for 2026 — System Design Handbook](https://www.systemdesignhandbook.com/guides/system-design-interview-questions/)
+- [System Design Interviews Changed in 2026 — Design Gurus Substack](https://designgurus.substack.com/p/system-design-interviews-changed)
+- [paperdraw.dev](https://paperdraw.dev/) (direct competitor — sandbox + simulation + failure injection)
+- [SyDe.cc](https://syde.cc/) (adjacent competitor — cloud-architect-focused)
+- [System Design Interview Guide: FAANG and Startups — Exponent](https://www.tryexponent.com/blog/system-design-interview-guide)
+
+## Session 1 Part 8 — 2026-05-12: started the FAANG-prep build. p99 latency landed. Service-type unification: AppServer + Worker become roles on a single `service` type. Operator chose the architecturally cleaner (more invasive) option B over the cheaper-shipping options. Test count 213 → 236.
+
+The operator's go-ahead was paired with a constraint: *"if we need to make any architectural changes that need to be called out, we should talk instead of just letting you do your thing."* This Part is the record of those check-ins and the decisions that came out of them.
+
+### Step 1 — p99 latency in the flow sim (cheap, additive)
+
+Added `p99Latency` field to every flow component (LB, AppServer, Cache, DB, ReadReplica, VPS) with default = 3× the mean. Sim accumulates p99 along the worst incoming path the same way it accumulates mean. New result field `avgP99Latency`; surfaced in `FlowResults` when nonzero. 6 new propagation tests in puzzles.test.js. No existing test regressed.
+
+The architectural decision (multiplier-based p99 vs distribution math) had been pre-confirmed via competitor research — paperdraw.dev and SyDe's marketing language strongly implies they use the same steady-state RPS math. Captured in [`caveats.md #3`](caveats.md). No friction here.
+
+### The Queue role discussion — I was wrong; operator pushed back; reversed
+
+Before adding Queue I checked in on whether it should be its own flow-sim role or just a `passthrough` with `data.type === 'queue'` special-casing. My initial lean was the latter ("fewer roles is cleaner"). Operator pushed: *"why not add a queue role though - let's talk about it."*
+
+They were right. Roles in our code are the dispatch mechanism for sim-specific behavior. A Queue genuinely has different semantic behavior (sync path terminates here; async path begins downstream) than a passthrough. Mixing role-based dispatch with type-based special cases is the smell. **Reversed to: Queue is a new flow-sim role; Worker stays as `sink` (it's a sink that happens to be on the async side of a Queue).**
+
+Lesson: when the operator asks "why not X instead of Y," it's almost always a real signal. Engage with the question instead of defending the prior recommendation.
+
+### The Worker / AppServer unification (the big one)
+
+Before adding Worker as a new top-level component type, surfaced the sprawl risk: App Server, Web Server, Worker, future API Gateway, etc. are all "programs that handle requests" with different interaction patterns. Operator: *"an app server and a worker are literally just programs that do different roles, so i'm concerned about sprawl for different 'components that do things' VS a predefined 'program' or server that has kind of a sub role or something."*
+
+Did focused research:
+- [Diagram-tool conventions](https://vfunction.com/blog/architecture-diagram-guide/): "Services" is one bucket; the LABEL distinguishes APIs / background jobs / micro-apps.
+- [Microsoft's Web-Queue-Worker pattern](https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/web-queue-worker): treats both as "services" with different interaction patterns.
+- [Application Server article](https://en.wikipedia.org/wiki/Application_server): app server = sync request handler; worker = async background processor. Architecturally a real distinction but a thin one.
+
+Presented three options:
+- (A) Worker as its own type — status quo pattern.
+- (B) Unify into a single `service` type with `role` config.
+- (C) Visible distinction with shared implementation.
+
+I leaned (C). Operator: *"i kind of would rather do B as the more sophisticated approach."*
+
+That's a load-bearing choice. (B) is more upfront work but encodes the right abstraction. (C) is a halfway house that defers the migration to "when we have 5+ types." Operator explicitly rejected the threshold — do it now.
+
+Two artifacts produced from this:
+- New memory record [`feedback-prefer-unified-taxonomy.md`](../.claude/projects/-Users-coreyprak-claude-systems-design-game/memory/feedback_prefer_unified_taxonomy.md): when a new component is structurally similar to existing ones, default to unification over parallel types.
+- [`caveats.md #8`](caveats.md): "Service-like components unified under one `service` type with a role config." Documents the scope (service-shape only; Program/WebServer stay separate as Lesson-1-family) and the migration shape for future similar decisions.
+
+### The migration itself
+
+Touched 6 files:
+- `src/lib/componentTypes.js` — removed top-level `appServer`; added `service` with `roles: { appServer, worker }` sub-object. New helpers: `metaFor(node)`, `paletteMetaFor(entry)`, `parsePaletteEntry(entry)`. `defaultsFor` extended to take optional `role` param.
+- `src/lib/componentInfo.js` — `appServer` entry split into `service:appServer` + `service:worker`. New helper `infoFor(node)` keys lookup as `type:role` when role exists.
+- `src/components/Palette.jsx` — handles object entries `{ type, role }` in `allowedComponents`. Drag carries role through dataTransfer.
+- `src/components/Canvas.jsx` — `handleDrop` reads role and includes in defaults call.
+- `src/components/SystemNode.jsx`, `src/components/PropertyPanel.jsx`, `src/components/ComponentInfo.jsx` — switched to `metaFor` / `infoFor` for role-aware lookups.
+- `src/lib/puzzles.js` — Lessons 5 + 6 migrated. `'appServer'` → `{ type: 'service', role: 'appServer' }` in `allowedComponents`; `'appServer'` → `'service'` with `config.role: 'appServer'` in `initialNodes` / `solution()`.
+
+Tests:
+- All three `node()` test helpers (in `puzzles.test.js`, `simulator.test.js`, and `puzzles.js` itself) updated to pass role through to `defaultsFor`. Caught a real bug here: without role passed, service nodes got empty defaults and the p99 cache test failed with `13.5 ≠ 16.5` (AppServer's 60ms p99 missing from the chain math). Migration of the helpers fixed it.
+- All `'appServer'` references in `puzzles.test.js` + `simulator.test.js` migrated.
+- Two contract tests updated to handle role-aware shapes:
+  - `allowedComponents references real types` — handles string and object entries.
+  - `componentType contracts` — role-aware types have per-role label/color/defaults; plain types have them at top level.
+- 16 new tests for the role-aware helpers (defaultsFor with role, metaFor, paletteMetaFor, parsePaletteEntry, infoFor — all four permutations across each).
+
+Test count: 213 → 236. Net +23 (6 from p99 in Step 1, 16 from role-aware helpers, 1 reorganization).
+
+### The decision pattern this Part encoded
+
+Three architectural check-ins, two of them reversed by operator pushback:
+
+1. **p99 model** — multiplier-based confirmed (operator accepted my recommendation; no reversal).
+2. **Queue role** — I leaned passthrough+special-case, operator pushed for distinct role, I reversed.
+3. **Service unification** — I leaned (C) middle-ground, operator pushed for (B) full unification, I reversed.
+
+The signal: my "lean cheaper" defaults consistently undershoot what the operator wants. They're willing to pay upfront migration cost for the cleaner abstraction. **Going forward: when surfacing options, lead with the architecturally cleanest one, not the cheapest-to-ship one.** The bias to ship cheaply is mine, not theirs.
+
+Memory captured this as `feedback-prefer-unified-taxonomy.md`. Surfacing the rule here too so it's also in the build log.
+
+### Next: Queue + async-path sim
+
+Step 2 is Queue. As a single new top-level type with new flow-sim role `queue`. Step 3 is the async-path sim logic (split `successRate` into `mainSuccessRate` + `backgroundSuccessRate`). Worker already exists as a role on `service`, ready to drain Queues once the sim recognizes them. After steps 2+3, Lesson 7 is unblocked.
+
+Sources used this Part:
+- [Microsoft's Web-Queue-Worker pattern](https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/web-queue-worker)
+- [Application Server — Wikipedia](https://en.wikipedia.org/wiki/Application_server)
+- [How web servers and application servers differ — Design Gurus](https://www.designgurus.io/answers/detail/how-do-web-servers-and-application-servers-differ-in-a-systems-architecture)
+- [Distributed Scalable Systems: Servers vs. Worker Nodes — Anudeep Balla](https://medium.com/@anudeepballa7/distributed-scalable-systems-servers-vs-worker-nodes-0c67c000b062)
+- [System architecture diagram basics — vFunction](https://vfunction.com/blog/architecture-diagram-guide/)
+
+### Decision state after walking the operator through "sandbox vs multi-phase"
+
+After surfacing the research, I posed 4 follow-up questions about pacing, lesson choice, UX-matching paperdraw.dev, and "minimum viable demo" cadence. Operator responses:
+
+1. **Pacing** — not yet locked. Operator hasn't said "commit a streak" or "interleave with other work." Treating as flexible until they push back.
+2. **Lesson 7 choice** — Operator hasn't overruled my recommendation. Defaulting to Scale-the-URL-Shortener (multi-phase, reuses Lesson 5) unless they say otherwise before we start building.
+3. **What "compete" looks like visually** — Operator: *"i wanna talk about that but i think we can try? with defaults maybe."* Read: green light to start with paperdraw.dev-style conventions (sliders for workload, failure-injection menus on nodes), refine our visual language as we go. Not committing to a from-scratch UX upfront; learn from the obvious patterns first.
+4. **Minimum-viable demo / public share timing** — Operator: *"i say we share when complete - i'm using it as a way to build tools for myself to learn but also teach in the students i mentor."* RESOLVED: share when complete, not after intermediate milestones.
+
+### The audience framing changes the strategy
+
+The operator's "tool for myself + mentees" framing is load-bearing context that should override how the earlier "compete" answer reads:
+
+- **This is NOT a race against paperdraw.dev for market share.** The "compete on breadth" answer earlier means "match their feature set so the tool's actually useful for our use cases," not "beat them to launch."
+- **The user-testing loop is the mentees**, not HN comments. Same shape as the wife-test on Lesson 3 — a real human runs it, surfaces confusion, we fix. That's the feedback channel.
+- **"Complete" is operator-defined**, not externally benchmarked. We iterate until the operator feels it's ready, then share. No anxiety about a competitor capturing the space; both audiences (operator + mentees) are internal.
+- **Polish matters more than speed.** No external clock. The 5–7 session estimate for the FAANG-prep arc is comfortable, not pressing.
+
+This also implies: the pedagogical curriculum (Lessons 1–6) is the load-bearing thing, not the FAANG-prep extension. The mentees use both, but the lessons are what teaches. FAANG-grade Lesson 7+8 are the *culmination* of the curriculum, not a separate product. Should reflect that in lesson copy and ordering.
+
+### Spec.md updated to reflect new context
+
+Added "Direction — FAANG-grade puzzles (planned)" section with the committed sequencing. Should follow with a tone-shift on the "compete" framing in a future spec update — soften "compete on breadth" to "match the features we need for our mentee use case." Capturing for next session, not editing in this round (the spec already reads fine for now).
+
+### Direction now lives in `spec.md`
+
+Added a new "Direction — FAANG-grade puzzles (planned)" section to `spec.md` capturing the committed direction, planned components, simulator extensions, modes, and lessons. That section is now the canonical reference for next session's starting point. This entry is the *narrative* of how the decision got made; spec.md is the *contract* of what we'll build.
+
+
+## Session 1 Part 9 — 2026-05-12: Queue + async-path sim — Lesson 7 is now unblocked. Steps 2+3 of the FAANG-prep build landed: Queue type registered with role `queue`; the flow simulator now splits sync vs background metrics. Test count 236 → 250.
+
+### Step 2: Queue component type
+
+Added `queue` to `componentTypes.js` as a top-level type with role `queue`. v1 config has only a `name` text prop — no internal capacity. The queue is an "infinite buffer" for now; the bottleneck has to be on the Worker side, not the queue itself. Real systems do have queue capacity limits (S3 ingress to SQS, Kafka partition limits), but adding the prop now invites players to fiddle with a knob that doesn't yet do anything. v2 can wire it when there's a lesson that actually teaches backpressure.
+
+The flow-sim role taxonomy is now `source | passthrough | cache | queue | sink`. The contract test in `puzzles.test.js` got that fifth value added. The simulator switch in `simulateFlow` now has an explicit `else if (meta.role === 'queue')` branch — see Step 3.
+
+`componentInfo` entry uses the same pattern as the rest: description / usage / connects / realWorld. The realWorld line lists SQS, RabbitMQ, Kafka topics, Redis lists, BullMQ — same shape across the industry, the lesson surface area maps to all of them.
+
+Color: `#06b6d4` (cyan-500). Distinct from the existing palette without crowding; gives the canvas a clear visual "this is the boundary" marker.
+
+### Step 3: Async-path sim with split metrics
+
+The model: a Queue terminates the sync path (enqueue = success from the client's POV) and seeds an async pass that propagates downstream until traffic lands at a sink. Workers in between apply their capacity caps to the async load. Two independent counters track each side.
+
+Sync-side change in `simulateFlow`: the topo-order loop got a new `else if (meta.role === 'queue')` branch that mirrors the sink branch — accepted traffic counts toward `totalReadServed` / `totalWriteServed`, latency-weights tally into the served buckets, and `readContinuing` + `writeContinuing` are zeroed so no sync traffic emerges from the queue. The new line is `s.asyncContinuing = s.accepted` plus `totalBackgroundAttempted += s.accepted`, which seeds the second pass.
+
+Async pass runs after the sync loop completes (gated on `totalBackgroundAttempted > 0` so existing lessons without a queue pay zero cost):
+
+```
+for (id of topoOrder):
+  if role=='source' or role=='queue': skip   // sources don't get async; queues already seeded
+  pull asyncContinuing from each parent, split evenly across parent's out-edges
+  apply capacity cap; record asyncAccepted, asyncDropped
+  if role=='sink': totalBackgroundServed += asyncAccepted; asyncContinuing = 0
+  else:            asyncContinuing = asyncAccepted
+```
+
+Edge `kind` (read/write/both) is irrelevant on the async side — jobs are jobs, not HTTP verbs. The async pass uses a simple even-split across the parent's `outAdj` count, which is the same approximation the sync side uses for load balancers fanning to N backends. Same primitive, simpler call site.
+
+New fields in the result:
+- `totalBackgroundAttempted` — sum of accepted traffic across all queues (the enqueue rate)
+- `totalBackgroundServed` — sum of async traffic that reached a sink
+- `backgroundSuccessRate` — ratio of the two; defaults to `1` when no queue exists (backward compatible — `evaluatePuzzle` for existing lessons doesn't trip)
+
+Stranded-async warning: a non-sink, non-queue node that accepted async traffic but has no out-edge emits `"Worker has X background job/s with no downstream to consume them."` Symmetric to the existing sync stranded-flow warning. Required `metaFor(node)` to get the role-aware label so a stranded `service:worker` says "Worker" not "Service" (which has no top-level label since it's role-aware).
+
+Bottleneck attribution updated: `dropped + asyncDropped` per node. An under-provisioned Worker now lights up as the bottleneck even though the sync side looks healthy. This is the exact insight Lesson 7 will surface.
+
+### What the new shape buys
+
+The classic FAANG SDI revelation — "your read path looks fine but the queue is unbounded and growing" — now has a numerical home in our sim. A graph that looks all-green on `successRate` can be red on `backgroundSuccessRate`. That gap is the lesson.
+
+```
+Client (1000 rps) → AppServer (cap 2000) → Queue → Worker (cap 50) → DB (cap 1000)
+
+successRate            = 100%   ✓ sync side healthy
+backgroundSuccessRate  =   5%   ✗ Worker is the bottleneck — backlog grows unbounded
+totalBackgroundDropped = 950 jobs/s
+```
+
+That's the kind of asymmetric-metric situation every email-sender, image-thumbnailer, search-indexer system has in production, and that every interviewer probes for. Lesson 7 will weaponize this.
+
+### Test additions
+
+8 new tests in `simulator.test.js` under `'flow simulator: queue terminates sync, opens async path'`:
+
+- queue terminates sync path (enqueue success)
+- split metrics exposed
+- backwards compat (no queue → backgroundSuccessRate=1)
+- worker scaled to match drains everything
+- queue fans out to two workers (load balancer for async)
+- queue without downstream strands traffic, sync still succeeds
+- worker without downstream warns
+- sync and background totals don't double-count
+
+4 new tests in `puzzles.test.js` under `'queue component type (Step 2 — async boundary scaffolding)'`:
+
+- registration: role=queue
+- has both handles
+- name default
+- componentInfo present
+
+Plus the existing contract test now permits `'queue'` as a valid flow-sim role. Total: 236 → 250.
+
+### What's deferred
+
+- **UI rendering** — `SystemNode.jsx` and the metrics panel don't surface the new fields yet. The data is in `result.backgroundSuccessRate` etc., but the player won't see it until a future UI pass. Deferred until Lesson 7 needs it; doing it now would be speculative.
+- **Per-queue per-node breakdown** — `result.perNode[queueId]` shows the sync accept count + the seeded `asyncContinuing`, but there's no per-queue "backlog growth rate" metric. The current model is steady-state, not over-time; backlog is implicit in `asyncDropped`. v2 can add a time axis if needed.
+- **Queue capacity / backlog cap** — see Step 2 notes. The prop exists nowhere right now; v2.
+- **Worker as sink for async** — Currently Worker is `passthrough` flow-sim role, so its accepted async traffic forwards downstream. If there's no downstream sink, the stranded-async warning fires. An alternative model would be "Worker IS the sink for async work" — but that breaks the Queue → Worker → DB pattern that 90% of SDI puzzles use. Current model is right.
+
+### Next: Step 4 — failure injection
+
+Right-click context menu on a node → "Simulate failure" → that node is grayed out, taken out of the topology, simulator re-runs. Player sees how the system degrades. This is the dropping-an-AZ / a-DB-shard-died move that interviewers love. Step 5 (CDN) follows. Then Lesson 7 (Scale the URL Shortener — multi-phase). The sim has the bones it needs; from here the work is mostly UI + lesson copy.
+
+
+### Operator chose pause-and-play over keep-going
+
+After surfacing Steps 2+3 complete, asked operator: continue to Step 4 (failure injection) on the dot-menu pattern, or pause to play with the new async-sim metrics in the dev server first? Operator chose pause-and-play. Cadence implication: between simulator-layer steps, validate visually before stacking the next one. Same pattern as the wife-test on Lesson 3 — a real human pokes at the new shape, surfaces anything that doesn't read right, *then* we keep building. The 5–7 session estimate for FAANG-prep absorbs this naturally; it's not slowing anything down.
+
+What the operator can drop on the canvas right now to exercise the new sim:
+1. Open any flow-puzzle lesson (4, 5, or 6).
+2. The Queue type isn't in any `allowedComponents` list yet — Step 2 just registers it. To exercise the async sim manually, the easiest path is to add `'queue'` and `{ type: 'service', role: 'worker' }` to a lesson's `allowedComponents` temporarily, or extend Lesson 5/6 with an async branch as a one-off test. Real wire-up comes when Lesson 7 lands.
+3. The metrics panel doesn't render `backgroundSuccessRate` yet (deferred per Part 9). To see the new numbers without UI work, the sim result can be inspected via the React DevTools or by adding a quick console.log in App.jsx.
+
+This "you have to dig to see it" cost is part of why the UI render was deferred — it would have been doing scaffolding for a lesson that doesn't exist yet. If the operator wants visibility in the dev server *before* Lesson 7, the simplest fix is to render the two extra numbers in the existing metrics panel. Small lift; flagging here as the obvious next move if pausing-to-play reveals "I can't actually see the new behavior."
+
+
+## Session 1 Part 10 — 2026-05-12: Lesson 6 → 6 + 7 split + first FAANG-grade puzzle (Lesson 8 Async Notification Pipeline). Test count 250 → 261.
+
+### What landed in this Part
+
+Three discrete moves, each driven by operator feedback during the play session:
+
+1. **Lesson 6 split into two puzzles**: operator noticed during play that the old Lesson 6 solution had App → 2 Read Replicas directly, which reads wrong in production-shape terms. Insertion of a DB Load Balancer between App and replicas is the canonical real-world pattern (RDS Reader endpoint, ProxySQL, PgBouncer-in-transaction-mode, HAProxy).
+2. **First FAANG-grade puzzle landed (Lesson 8)**: Async Notification Pipeline. Tests the Queue + Worker primitive (Parts 8 + 9) at interview scope.
+3. **Metrics panel renders background (async) section**: when a Queue is in the graph, the panel shows `Jobs drained` + `Background success` under a dashed divider. Hidden when no queue present — existing lessons stay visually clean.
+
+### The Lesson 6 split — why two puzzles instead of one
+
+Operator's framing: *"i think LB approach is fine but maybe have another separate puzzle to introduce the need for databas load balancer, and then introducing databse read/write replica or something."* Two pedagogical primitives that the old single-lesson tried to teach simultaneously, now broken apart:
+
+- **Lesson 6 — Add a Database Load Balancer**: A pure DB-cluster lesson. Load: 3000 req/s all writes (so Cache is irrelevant — cache only absorbs reads). Single DB caps at 1000; player must add 3 DBs behind an LB. The primitive: "always route DB traffic through an LB so the App doesn't couple to specific endpoints." Acknowledges in the blurb that real systems shard writes or use multi-master — we abstract the cluster as a generic write-pool. Cross-references `simplifications.md`.
+- **Lesson 7 — Replicate Your Reads (was old Lesson 6)**: A read/write split lesson, now building on Lesson 6's primitive. Writes go direct to Primary; reads route through an LB-for-reads to multiple Read Replicas. The solution shape demonstrates the same "LB-in-front-of-DB-layer" pattern applied asymmetrically.
+
+### Why all-writes (Option A) for the new Lesson 6
+
+Operator confirmed Option A (all-writes workload) over Option B (mixed read/write with cache underperforming). The pedagogical reasoning: Lesson 6 teaches *one* concept (DB Load Balancer), and an artificial workload that isolates that concept is the right pedagogical move. Cache doesn't intrude. The "real systems are read-heavy" lesson is then taught by Lesson 7 where reads dominate and the cache + replica answer kicks in.
+
+The cost: writes-only is artificial. A student going from Lesson 6 to a real interview won't see this exact load shape. Mitigated by the blurb explicitly framing it as "writes dominate — caches don't help here" rather than "this is how systems usually look."
+
+### simplifications.md introduced
+
+Operator surfaced the meta-question: *"i acknowledge there exists more than one solution to infra, like an app having a read write endpoint for DBs without knowing how things work in the background. maybe we should acknowledge things like that and not plan for it, for the sake of simplicity some concepts can be implied, but still mentioned."*
+
+The teaching-tool analog of `caveats.md` (build decisions). Started with three entries:
+
+1. **DB clusters as generic write-capable pools** (Lesson 6) — the multi-master/sharding abstraction.
+2. **Read Replicas don't lag** (Lessons 7+) — the steady-state sim can't model replication lag; flag for the student that replication lag is a real thing they'll be asked about in interviews.
+3. **Queues never run out of space** (Lessons 7+) — the v1 Queue has no capacity; real queues fill, drop, or backpressure.
+
+Format mirrors caveats: where it shows up / what we say / what's actually going on / why we abstract / what a student should know. The "what a student should know" framing is load-bearing — this is the bridge from teaching-tool-clarity to interview-realism.
+
+### The first FAANG-grade puzzle — Lesson 8 design walk-through
+
+**Setup**: Service handles 1000 notifications/sec — push, email, SMS, expensive ~200ms third-party calls. Sync sends couple the API's latency to the external provider's. Decouple via Queue.
+
+**Requirements** (4):
+1. Sync success rate ≥ 99% — the API has to ack the client at the target rate.
+2. **Background success rate ≥ 99%** — Workers have to drain the queue at the target rate. *This is the new metric; it's what makes this lesson FAANG-grade.*
+3. Sync p99 latency ≤ 100ms — keeps the API snappy. *This is the constraint that forces the queue.* A sync DB path is `LB(3) + App(60) + DB(90) = 153ms`, busts the cap. With a queue: `LB(3) + App(60) + Queue(0) = 63ms`.
+4. hasQueue presence — explicit predicate so the player can't dodge the lesson by tuning DB latency.
+
+**Pedagogical traps the puzzle sets**:
+- *"I'll just scale app servers."* — Sync side will pass, but p99 ≤ 100 will fail. Forces them to recognize that the *latency* problem isn't a scaling problem.
+- *"I added the queue, the sync side is green, I'm done."* — Background side will be red if workers are sized at default capacity (50 jobs/sec vs 1000 jobs/sec needed). The asymmetric-metric trap is the headline. *"Looks healthy but isn't"* is exactly what interviewers probe for.
+- *"I'll add 1 worker."* — At default cap 50, it drops 950 jobs/s. Player either bumps capacity or adds more workers; either works.
+
+**Canonical solution**: `Client → LB → 2 App Servers → Queue → 2 Workers (cap 500 each) → Database`. 9 nodes, 9 edges. The shape that the player sees when they hit "Show Solution" — clean fan-out / fan-in on both sync and async sides.
+
+**Multiple valid passing solutions** (we don't enforce a specific shape):
+- 1 big worker (cap 1000) instead of 2 small (cap 500 each). Test covers this.
+- 1 app server with capacity overridden to 1000 instead of 2 default-cap. Test doesn't cover but works.
+- More than 2 workers with smaller individual capacity. Works.
+
+The space of solutions is real — a player who passes via a different shape than the canonical is still learning the lesson. The shape is the architecture; multiple valid shapes is the point.
+
+### Metrics panel — surfacing the new numbers
+
+Conditional rendering: the Background section only appears when `r.totalBackgroundAttempted > 0`. Otherwise the existing lessons (no queue) get the same metrics panel they had before — zero new noise.
+
+Inside the section:
+- *Jobs drained*: `X / Y jobs/s` (matches the "Reads served" / "Writes served" formatting style).
+- *Background success*: percentage, color-coded green if ≥ 99%, red otherwise. Matches how success rate is shown in evaluator UI elsewhere.
+
+Visual divider (dashed border-top) separates async metrics from sync ones. Cheap, clear, hides itself when irrelevant.
+
+### Test additions
+
+7 new tests:
+- 4 framework tests (puzzle contracts + canonical solution for Lesson 6 + Lesson 8)
+- 3 targeted failure-mode tests for Lesson 8:
+  - Sync DB path (no queue) fails p99
+  - Queue + default-capacity worker → sync green, background red (the headline asymmetry)
+  - Single big worker (cap 1000) is a valid alternative shape
+
+### Decision-state log
+
+This Part's decisions (operator pushback in **bold**):
+
+- **Lesson 6 split**: yes, two puzzles. Operator drove this. Not my recommendation; I would have left as one.
+- **Lesson 6 workload**: all-writes (Option A). I led with this; operator confirmed.
+- **DB Proxy as new component**: rejected. Reuse the LB primitive. Operator: *"db proxy i think can stay as generic load balancer."* Consistent with [[feedback-prefer-unified-taxonomy]] in memory.
+- **simplifications.md**: yes, started.
+- **Renumber subsequent lessons**: yes (vs. inserting at 6.5).
+- **Build a FAANG-grade puzzle now vs. wait for CDN + failure injection**: build now. Operator: *"yes that sounds good."*
+
+### What this Part *didn't* address
+
+- **CDN component** (Step 5 on the FAANG-prep roadmap) — still pending. Needed for global-scale puzzles (Twitter, Uber, image hosting at scale).
+- **Failure injection** (Step 4) — still pending. Needed for "what happens if an AZ dies?" deep-dives.
+- **Per-node visual indicators for stranded async traffic** — the sim emits warnings as text but doesn't highlight the stranded node visually. Cheap addition; deferred.
+- **Hints surface** — current `lesson:` text on predicates covers presence checks well, but test-based requirements (success rate, p99) have no inline hint when they fail. Operator surfaced this at end-of-Part as a question; cheap path is to extend the existing mechanism to test-based requirements (same shape, just a render-side extension). Discussion ongoing.
+
+### Test count progression for the curriculum
+
+213 (start of session 1 part 8) → 236 (after p99 + service unification) → 250 (after Queue + async sim) → 254 (after Lesson 6 split) → 261 (after Lesson 8). That's +48 tests in three Parts for a curriculum that grew from 6 lessons to 8 lessons and three new sim primitives (p99, queue, async-path). The test density is what makes the operator-pushback feedback loop possible — a botched edit lights up immediately.
+
+
+
+## Session 1 Part 11 — 2026-05-12: Hint layer landed — three passes (lesson copy, bottleneck pointer, metric tooltips). No new tests; 261 stays. The play loop is now self-explanatory: every red requirement carries its own nudge.
+
+### Why three passes, not one feature
+
+Operator asked: *"what do you think about adding hints or something - would that complicate things?"* The interesting answer wasn't "build a hint system." It was "we already have one — `requirement.lesson`, rendered inline when a requirement is red. Nobody populated it on the test-based requirements." The mechanism was free; the work was authoring.
+
+That reframed it. Three discrete passes, each cheap:
+
+1. **Pass 1 — author lesson copy on test-based requirements** (zero code change).
+2. **Pass 2 — bottleneck node label in metrics panel** (5 lines of code + a sim-result field).
+3. **Pass 3 — metric tooltips** (native browser `title` attributes — no React state, no popovers).
+
+### Pass 1 — the load-bearing part
+
+Existing predicate-style requirements (e.g. `hasQueue`, `hasLB`) had `lesson:` text from earlier sessions, but test-style requirements (success rate, p99, latency, etc.) didn't — and those are 80% of what the player actually fails. Wrote lesson copy for every test-based requirement across Lessons 4 / 5 / 6 / 7 / 8. Each follows the same shape:
+
+- **What's wrong** (factual, no condescension).
+- **Where to look** (a node, a metric, a knob).
+- **Tie back to the lesson's concept** (without giving the canonical solution).
+
+Lesson 8's `asyncSuccess` hint, for example: *"This is the headline async trap: sync looks healthy while Workers fail to drain the Queue. Workers default to 50 jobs/sec capacity — far below the 1000 jobs/sec inbound. Either add more Workers OR bump each Worker's capacity in the property panel."* That's the kind of nudge that turns a frustrating run into a learning moment.
+
+The pattern that pays off: name the *specific number* the player should be staring at. "p99 too high" is vague; "a Database adds 90ms at p99 — that alone busts the 100ms budget" is actionable.
+
+### Pass 2 — the bottleneck pointer
+
+The simulator already computed `bottleneckNodeId` (the node with the most drops, accounting for both sync and async drop counters). The UI just wasn't surfacing it. Added a `bottleneckLabel` field to the flow-sim result (role-aware via `metaFor` so a stuck `service:worker` says *Worker* and not *Service*), and a row in the metrics panel that renders only when `totalDropped > 0`. Clean when healthy, pointed when broken.
+
+The visual: the bottleneck label is the only colored value in the metrics panel (red `bad` class), so it pops without needing extra typography. Matches the existing "dropped > 0" red treatment.
+
+### Pass 3 — tooltips on every metric
+
+Native HTML `title` attributes on every metric label in the metrics panel. No popovers, no React state, no z-index battles — just hover the label, get one sentence of context. Eight tooltips total:
+
+- *Reads served / Writes served / Dropped* — what they count.
+- *Avg latency / p99 latency* — what these means; calls out the "p99 default = 3× mean" rule.
+- *Bottleneck* — "where to scale first."
+- *Jobs drained / Background success* — explicitly names the async-failure-trap on the Background success tooltip ("this can be 5% while sync success is 100%").
+
+The cost of native tooltips: they show up after a delay (browser default ~500ms), they're not stylable. The benefit: zero implementation cost, zero accessibility worries (screen readers read them natively), zero state. For "explain a metric in one sentence" they're the right tool.
+
+### The play loop after this Part
+
+Take Lesson 8 cold. Wire the obvious shape (Client → LB → 2 Apps → DB). What you now see:
+
+1. Metrics panel renders. p99 is 153ms; `Sync p99 latency ≤ 100ms` requirement is red, hint reads *"p99 too high means a slow node is on the sync path. A Database adds 90ms at p99 — that alone busts the budget. The fix is to end the sync path at a Queue."*
+2. Drop in a Queue. Sync p99 drops to 63ms (LB + App + Queue 0). But now Background success appears: 5%. Hint reads *"the headline async trap... Workers default to 50 jobs/sec — far below the 1000 inbound."* Bottleneck row says *Worker*.
+3. Bump Worker capacity (or add more). Background success climbs to 99%+. Puzzle passes.
+
+Every step had a teacher pointing at the next thing. That's the difference between a frustrating puzzle and a teaching puzzle.
+
+### What this Part deliberately didn't build
+
+- **Progressive disclosure** (hints that reveal more as the player retries). Would need "stuck detection" state, a 3-tier hint UI, hint-counter persistence. Not free. Held until we see if static hints aren't enough.
+- **Animated/visual bottleneck indicator on the node itself** (e.g., red pulse on the node dropping the most). Easy enough to add later if the metrics-panel row turns out to be too subtle.
+- **Failure-injection mode** (Step 4 on the FAANG-prep roadmap) — still pending.
+
+### Decision-state log
+
+- **Hint mechanism**: extend the existing `lesson:` field on requirements; don't build new. Authoring task, not engineering task.
+- **Bottleneck rendering**: only when `totalDropped > 0` (no clutter when healthy).
+- **Tooltips**: native `title` attributes, not React popovers. Cheapest path; accessible by default.
+- **Test count**: 261 unchanged — Pass 1 was authoring, Pass 2 is a single new sim field, Pass 3 is JSX attributes. None of these need new tests; the canonical-solution test already proves the requirements parse correctly.
+
+
+
+## Session 1 Part 12 — 2026-05-12: Step 4 — Failure injection. Mark any node as failed; sim filters it out; UI grays it + dashes its edges. The asymmetric-failure trap from Lesson 8 now has a knob you can pull. Test count 261 → 267.
+
+### Design — where the failure semantics live
+
+Two viable shapes were in play:
+
+- **A. Caller filters before simulate.** Simulator stays pure; UI passes a smaller graph in.
+- **B. Simulator skips failed nodes inline.** `data.failed` flows through; sim treats failed nodes as drop-everything sinks.
+
+Picked **A**, but realized halfway through that we can do A *inside* `simulate()` — filter once at the top, dispatch with the pruned graph. Caller code unchanged. Clean wins.
+
+```js
+export function simulate(puzzle, nodes, edges) {
+  const failedIds = new Set();
+  for (const n of nodes) if (n.data?.failed) failedIds.add(n.id);
+  if (failedIds.size > 0) {
+    nodes = nodes.filter((n) => !failedIds.has(n.id));
+    edges = edges.filter((e) => !failedIds.has(e.source) && !failedIds.has(e.target));
+  }
+  const result = dispatch(puzzle, nodes, edges);
+  ...
+}
+```
+
+Three properties this gives us for free:
+
+1. **Edges into failed nodes strand traffic upstream.** Existing stranded-flow warning fires automatically. *"Load Balancer has 1000 req/s with no read-carrying out-edge"* is exactly what should happen when the only downstream just died.
+2. **Edges out of failed nodes carry zero.** Nothing downstream sees the failed node's traffic.
+3. **`perNode` doesn't include failed nodes.** Their visual state comes from `data.failed`, not sim output. The metrics panel's per-node display is unaffected.
+
+The choice writes itself once you realize the existing stranded-flow detection already covers the failed-node case. Adding a new "this node failed" code path in the sim would have duplicated logic that already existed.
+
+### UI — the button, the gray, the OFFLINE pill
+
+**Property panel button** — yellow when active ("↓ Simulate failure"), green when reversing ("↑ Restore node"). Tooltip explains the reversibility. Sits between the property fields and the existing "Delete node" button. Color choice matters: red would be confusing alongside the delete button; yellow says "danger but reversible."
+
+**Node visual** — `opacity: 0.45` + `filter: grayscale(75%)` + `border-style: dashed`. Three signals stacked so it reads at a glance even at canvas zoom-out. Plus an "OFFLINE" pill in the header (small caps, black background) so the state is named, not just implied. Containers (Computer) get the same treatment via `.computer-frame.failed`.
+
+**Edge visual** — when either endpoint is failed, the edge goes `strokeDasharray: '6 4'` + `opacity: 0.5` + neutral gray color. The R/W label still renders but with `opacity: 0.4`. Visually says "this connection is broken."
+
+### Why a button, not a right-click context menu
+
+Considered:
+- **Right-click context menu** — standard pattern, but invisible until you guess.
+- **Dot-menu (⋯)** — the existing pattern in this codebase (for "set port" etc).
+- **Property panel button** — always visible when a node is selected.
+
+Picked the property panel button for two reasons:
+1. **Discoverability for FAANG-prep.** A student running through Lesson 8 cold needs to *find* the failure feature. The property panel is the one place they're already looking when they want to know about a node.
+2. **Reversible state needs a clear toggle indicator.** A context menu hides "this node is currently failed"; the property panel button reads its current state and flips its label/color. The state is legible at a glance.
+
+The dot-menu would have worked too. Property panel was just one fewer click to reach the action.
+
+### Tests — what they pin down
+
+Six new tests covering the failure-injection semantics directly:
+
+1. Failed sink → its traffic shifts to peers (which may now be overcapacity).
+2. Failed passthrough → downstream sees nothing; client traffic strands.
+3. Failed source → no traffic emitted.
+4. No failed nodes → sim unchanged (regression guard against accidental side effects).
+5. Failed nodes don't appear in `perNode`.
+6. The headline pedagogical demo: in an async pipeline scaled to barely pass, killing one of two Workers drops `backgroundSuccessRate` from 100% to 50% — *while sync stays at 100%*. The asymmetric-failure trap as an actual outage.
+
+That last test is the one that proves Step 4 was worth building. Lesson 8 already taught the asymmetric-failure pattern via under-sized Workers; failure injection lets the player *experience* it as a real outage.
+
+### What's still cheap-to-add but deferred
+
+- **Drag-to-fail keyboard shortcut.** Not necessary; the button is enough.
+- **Multi-node fail (lasso + fail).** Edge case; ignored for v1.
+- **Per-AZ failure groups.** Would require a "zone" concept the sim doesn't model. Possibly relevant when CDN + geo features land in Step 5+.
+- **Cascade visualization** — animation showing which downstream nodes are now stranded when a node fails. Cheap enhancement; deferred until we see whether the current static treatment is clear enough.
+
+### What this unlocks for Lesson 9 (Newsfeed Core, queued next)
+
+Lesson 9 (Twitter newsfeed core) will use Queue + Worker fanout. With failure injection now in:
+
+- **Failing a Worker** during fanout → reads stay healthy from cache, but new tweets stop propagating. Pedagogically: "the cache shows stale data; users don't see new posts."
+- **Failing the Cache** → all reads fall through to the slower DB. Latency spikes. Pedagogically: "what's your fallback strategy?"
+- **Failing the primary DB** → writes start dropping. Reads continue from cache until cache TTL would expire (which we don't model — but the lesson can call it out).
+
+Each of these is a deep-dive question an interviewer would ask. Step 4 turned them from hypothetical into clickable.
+
+### Cumulative test density
+
+213 (Part 8 start) → 236 → 250 → 254 → 261 → 267 across Parts 8–12. That's +54 tests in five Parts for ~10 features (p99, service unification, Queue, async sim, Lesson 6 split, simplifications, Lesson 8, hints layer, bottleneck pointer, tooltips, failure injection). Roughly 5 tests per feature, which is the band where regressions surface immediately but tests don't become a tax on velocity. Holding steady.
+
+
+
+## Session 1 Part 13 — 2026-05-12: Lesson 9 (Newsfeed Core) landed, and three follow-up fixes that came out of building it: a p99-propagation bug in the simulator, an idle-Worker UI bug, and an audit memory rule. Test count 267 → 274.
+
+### Lesson 9 — what makes it FAANG-grade
+
+Twitter-style mixed workload. Two clients with very different shapes: 100 Posters writing tweets, 1000 Readers loading feeds. Same LB at the edge, but the paths diverge — writes fan out asynchronously through a Queue + Worker pool, reads hit a Cache (misses fall to DB).
+
+Three things this puzzle exercises that no prior lesson does:
+
+1. **Two sources sharing one LB.** First time the curriculum has a multi-client workload. Forces the player to think about edge labeling at the entry point (`posters → LB` carries W, `readers → LB` carries R).
+2. **Two parallel pipelines after the App layer.** Reads via Cache, writes via Queue. Every prior puzzle had one path.
+3. **Both sync AND async success rates simultaneously enforced.** Sync requires reads + writes (with R/W split, like Lesson 7) AND p99 ≤ 100ms (like Lesson 8) AND background ≥ 99% (like Lesson 8). The combination is what makes failure-injection on Lesson 9 so pedagogically rich — kill the Cache and you see one set of metrics tank; kill a Worker and you see a different set.
+
+Workload sized so default capacities mostly work (Workers default cap 50, 2 of them = 100 jobs/s = matches the inbound write rate). The player tunes App Server capacity but otherwise the defaults are educational.
+
+### The p99 bug that the canonical solution surfaced
+
+When I ran the canonical solution for Lesson 9, p99 came back at 138ms — busting the 100ms requirement. My hand math said 85ms. Tracing showed the issue:
+
+The simulator's `worstParentP99Latency` was computed by taking max over *all* parents of a node. For Newsfeed Core's DB, that meant the DB's accumulated p99 included Worker → DB latency (Worker p99 = 300ms) even on the *sync* read path through Cache → DB. The reads weren't actually traversing the Worker; they came in via Cache. But the sim conflated them.
+
+The fix in `simulator.js`:
+
+```diff
+- worstParentLatency = Math.max(worstParentLatency, ps.latencyToHere);
+- worstParentP99Latency = Math.max(worstParentP99Latency, ps.p99LatencyToHere);
++ if (readFromParent > 0 || writeFromParent > 0) {
++   worstParentLatency = Math.max(worstParentLatency, ps.latencyToHere);
++   worstParentP99Latency = Math.max(worstParentP99Latency, ps.p99LatencyToHere);
++ }
+```
+
+Only count a parent's accumulated latency if it actually delivers sync flow on this edge. Otherwise a parent in the graph for a different flow (e.g., a Worker that's part of async fanout but also wires to the same sink) inflates the sync-side p99 spuriously.
+
+After the fix: p99 dropped to 84.8ms, matched my hand math. Lesson 9 canonical passes. *All 267 existing tests still pass* — which means the bug only manifests when a sink has parents on disjoint flow paths. Lesson 9 was the first puzzle to construct that shape; that's why it surfaced now.
+
+### The idle-Worker UI bug — and the rule it generated
+
+After fixing the p99 bug, the operator played Lesson 9 and reported: *"the DB and workers say 'idle'"*.
+
+Root cause: in `SystemNode.simSummary()`, the per-node display read only sync-side metrics (`sim.accepted`, `sim.continuing`, `sim.dropped`). Async metrics (`sim.asyncAccepted`, `sim.asyncContinuing`, `sim.asyncDropped`) were never consulted. Workers, which only have async flow in this puzzle, displayed "idle" while actually processing 50 jobs/s each.
+
+The fix surfaces async flow with a distinct suffix so sync and async are readable on the same line:
+
+```
+Worker:  "50 async"        (no sync flow)
+DB:      "200 ok · 100 async"  (both)
+Queue:   "100 ok"          (sync only, queue terminates sync)
+Cache:   "1.0k ok"         (sync only)
+```
+
+But the more interesting takeaway was the operator's follow-up question: *"how would i have been able to get you to catch this?"*
+
+The honest answer was uncomfortable. The CLAUDE.md rule *"For UI or frontend changes, start the dev server and use the feature in a browser before reporting the task as complete"* was in my system prompt the whole time. I declared Lessons 8 and 9 done off green tests alone, never opened them in the browser. The visual smoke test would have caught the "idle Worker" display immediately.
+
+The deeper engineering miss was earlier: when I added `asyncAccepted` / `asyncContinuing` / `asyncDropped` to the sim result in **Part 9 (Step 3)**, I updated the metrics panel but forgot `SystemNode.simSummary`. Three Parts of compounding work rode that bug.
+
+### The consumer-audit memory rule
+
+Captured as a new feedback memory: `feedback-audit-consumers-on-field-add`. The rule is:
+
+> When adding new fields to a shared data structure (sim result, public state, exported config), grep all callers of related/sibling fields and audit each one. Report the audit in the user-facing summary so the operator can see I did it.
+
+After capturing the rule, I retroactively did the audit for every field I'd added since Part 8. Two consumers of perNode (App.jsx feeding SystemNode + SystemNode.simSummary), nine consumers of top-level sim fields (all in PuzzleBar.jsx + puzzle requirements), five places consuming `data.failed` (all updated when failure injection landed), and eleven raw `componentTypes[type]` lookups (all reading properties that don't vary across roles, so no role-aware refactor needed). One small **dead code** observation: `bottleneckNodeId` is in the result but no production consumer reads it — only `bottleneckLabel` is used. Leaving for now; could be removed in a future cleanup.
+
+The audit was clean — no other "missed consumer" bugs of the same shape lurking.
+
+### Memory state after this Part
+
+Three feedback rules now stack:
+
+1. **[Prefer unified taxonomy](feedback-prefer-unified-taxonomy)** — when a new component is structurally similar to existing ones, unify with role config.
+2. **[Pause-to-play cadence](feedback-pause-to-play-cadence)** — after each sim-layer step, surface to operator before stacking the next.
+3. **[Audit consumers on field-add](feedback-audit-consumers-on-field-add)** — when adding fields to shared data, grep callers and audit each.
+
+Rules #2 and #3 are both reactive to this session's incidents. #2 caught the read-replica direct-connect issue (Lesson 6) during a play break; #3 was generated from the idle-Worker incident. Both should compound going forward: each new step gets a play break AND a consumer audit.
+
+### Decision-state log
+
+This Part's decisions, mostly retrospective fixes:
+
+- **Lesson 9 design**: 100 writes + 1000 reads, two parallel paths. Operator approved.
+- **p99 fix scope**: small, surgical change to the parent-loop in `simulateFlow`. Could have been a larger refactor of the latency-tracking model but that's not needed — only the "filter parents by flow contribution" addition was load-bearing.
+- **Async UI display format**: "50 async" / "200 ok · 100 async". Considered "200 sync · 100 async" but the existing format is "X ok" without a "sync" prefix; adding it would have been noisy for the 90% of cases without async. Same-line dot-separated.
+- **bottleneckNodeId dead code**: left in place. Could remove but risk of breaking something is small and benefit is small. Skip.
+- **Cache → CDN unification**: deferred to Part 14 (Step 5).
+
+
+
+## Session 1 Part 14 — 2026-05-12: Step 5 (CDN) + Lesson 10 (Twitter at Scale, the curriculum capstone). Cache unified into a role-aware type. Test count 274 → 284 across the Part.
+
+### Step 5 — CDN as a role on cache, not a parallel type
+
+Per [[feedback-prefer-unified-taxonomy]]: a CDN is structurally identical to a Cache — both absorb reads at a hit rate, pass writes through. The only differences are config (CDN has higher hit rate, lower latency, bigger capacity) and topological position (CDN at edge before LB; Cache between App and DB). Per the rule, these don't justify a parallel type.
+
+Refactored `cache` to be role-aware the same way `service` was in Part 8:
+
+```js
+cache: {
+  role: 'cache',   // flow-sim role stays — sim still does `meta.role === 'cache'`
+  hasInput: true,
+  hasOutput: true,
+  props: [...],    // shared (capacity, latency, p99, hitRate)
+  roles: {
+    internal: { label: 'Cache', color: '#f59e0b',
+                defaults: { capacity: 50_000, latency: 2, p99Latency: 6, hitRate: 0.8 } },
+    cdn:      { label: 'CDN',   color: '#ec4899',
+                defaults: { capacity: 1_000_000, latency: 1, p99Latency: 5, hitRate: 0.95 } },
+  },
+}
+```
+
+CDN defaults are deliberately aggressive — real CDNs absorb millions of req/s globally; we model the aggregate as one node. Modeling per-PoP geography would be a v2 enhancement (added to simplifications.md).
+
+### Migration tax — modest, paid up front
+
+Per the unification rule, no base defaults. All cache nodes must now specify a role. Touched 12 spots:
+- `puzzles.js`: 4 changes (Lesson 5 allowedComponents + solution; Lesson 9 allowedComponents + solution + `hasCache` predicate).
+- `componentInfo.js`: replaced `cache` entry with `cache:internal` + `cache:cdn` keyed entries.
+- `puzzles.test.js`: 4 cache-node references migrated; one `infoFor` test now exercises both roles.
+- `simulator.test.js`: 2 cache-node references migrated.
+
+Followed the audit-on-field-add rule from Part 13 — grepped all `'cache'` literal references and reviewed each before declaring done. One real callsite (`SystemNode.simSummary()` case 'cache') intentionally unchanged since it reads `cfg.capacity` / `hitRate` / `latency` directly, fields shared across both roles.
+
+### Role-scoped presence predicate
+
+To express `hasCdn` (presence of a cache *with role cdn*) cleanly, extended two functions:
+
+1. **`countNodesByType`** in simulator: now produces both bare type counts and compound `type:role` counts. `cache:cdn`, `service:worker`, etc.
+2. **`evaluatePredicate`** in puzzles: presence predicate accepts optional `role` field. Lookup keys off `type:role` when role is supplied, falls back to bare type otherwise (backward compatible — existing predicates unchanged).
+
+```js
+{ kind: 'presence', type: 'cache', role: 'cdn', min: 1 }
+```
+
+The role-scoping mechanism is now there for any future role-aware presence checks (e.g., `service:worker min: 2` if a lesson needs it).
+
+### Lesson 10 — built lighter first, then expanded after an audit
+
+The first Lesson 10 build ("Fix A" in the conversation) was a 11-node solution: Posters + Readers + CDN + LB + 2 Apps + Internal Cache + Queue + 2 Workers + 1 DB (cap-bumped to 2000). It passed the sim. It landed.
+
+Then the operator asked: *"audit lesson 10 for valid real life acceptable solution"*. The audit was uncomfortable. The 11-node solution had:
+
+- ❌ No read replicas (Lesson 7's pattern unused).
+- ❌ No DB cluster (Lesson 6's pattern unused — single DB with hand-tuned capacity).
+- ⚠ Worker → DB instead of Worker → Cache (documented in simplifications.md, acceptable).
+- ✓ CDN at edge.
+- ✓ Internal cache + queue/worker.
+
+So the lesson was *technically passing* but missing two of the most important read- and write-scaling patterns from the curriculum. An interviewer evaluating the canonical would push on "where are your replicas?" and "what happens when one DB shard fills up?" — and the student would have no good answer.
+
+Operator chose **Fix B** when surfaced: redesign Lesson 10 as a true capstone that integrates every prior pattern. This was the right call. It's what the lesson's title ("Twitter at Scale") implies.
+
+### The capstone shape
+
+```
+                           ┌─► App-1 ─┬─[R]─► Cache ─[R]─► Read-LB ─► Replica-1
+                           │          │                              Replica-2
+Readers (50k) ─► CDN ─► LB-front      └─[W]─► Queue ──► Worker-1 ──► DB-LB ─► DB-primary-1
+                           │                  │         Worker-2             DB-primary-2
+Posters (3k) ─────────────► App-2 ─┘                                          DB-primary-3
+                           (mirror of App-1 wiring)
+```
+
+17 nodes, 19 edges. Workload: 3000 writes/sec (forces DB cluster) + 50000 reads/sec (forces CDN).
+
+Numbers (verified by debug script):
+- **47500** reads absorbed at CDN (95% hit), **2000** at internal cache (80% hit on 2500 misses), **500** at read replicas → 100% sync read served.
+- **3000** writes terminate at Queue → 100% sync write served (ack here).
+- **3000** background jobs drain through 2 Workers (cap 1500 ea) → DB-LB → 3 primary DBs (default cap 1000 ea, exactly matched) → 100% background served.
+- **avgP99 ≈ 12.7ms** — dominated by cheap CDN hits despite the 167ms read-replica path being in the mix.
+
+Every component is at or near capacity. That's pedagogically intentional — a real interview answer also runs close to budget; over-provisioning is its own anti-pattern.
+
+### Three presence predicates force the capstone shape
+
+The puzzle has 4 metric requirements + 3 presence requirements:
+
+- `hasCdn` — the headline pattern from this lesson.
+- `hasReadReplica` — forces application of Lesson 7.
+- `hasQueue` — forces application of Lessons 8–9.
+
+DB clustering and internal cache are *math-forced* rather than predicate-forced: 3000 writes/sec at default DB cap 1000 = 3 DBs minimum; the cache + replica chain is what keeps the read math sane without absurd numbers of replicas.
+
+I considered adding `database min: 3` and `hasInternalCache` predicates but decided against — the math-forcing approach lets a creative player cap-bump in unusual ways and still pass, which matches how real systems are designed (multiple valid approaches).
+
+### Three targeted failure-mode tests
+
+Each covers a distinct way to *fail* the capstone:
+
+1. **No CDN** — even with massively bumped App capacity and the full backend, 50k reads overwhelm the LB→App→backend chain. `successRate < 0.99`.
+2. **Single primary DB** — 3000 async writes hit a default-cap (1000) DB. `backgroundSuccessRate < 0.99`. (The DB-cluster pattern from Lesson 6 is mandatory here.)
+3. **No read replicas** — every other pattern present but `hasReadReplica` predicate fails. Shows the predicate is doing its job.
+
+### Pause-to-audit as a new pattern
+
+Captured implicitly: the operator's "audit Lesson 10 for valid real life acceptable solution" request prompted me to check the work against an *external standard* (would a FAANG interviewer accept this?). The audit found gaps. The Fix B redesign closed them.
+
+This is a different shape from [[feedback-pause-to-play-cadence]]:
+- *Pause-to-play* = "is this confusing or buggy?" (UX feedback loop)
+- *Pause-to-audit* = "is this complete vs. an external standard?" (correctness/realism feedback loop)
+
+Both pauses produce different kinds of fixes. Pause-to-play caught the Lesson 6 direct-connect issue and the idle-Worker bug. Pause-to-audit caught the missing-Lesson-6/7-patterns gap. Both should be standing offers after substantial work lands.
+
+I'm not capturing this as a feedback memory yet — only one data point so far. If the operator does another "audit X" pass on a future lesson and it produces a similar payoff, I'll save it as a rule.
+
+### Decision-state log
+
+- **CDN as new type vs role on cache**: chose role on cache. Per [[feedback-prefer-unified-taxonomy]].
+- **Migration: full unification vs hybrid**: full unification (no base defaults, role mandatory). Same as service from Part 8. Operator pattern is upfront-purity.
+- **Lesson 10 scope: light-touch vs full capstone**: operator chose full capstone after the audit. Right call.
+- **Forcing patterns: predicates vs math**: hybrid — CDN, Read Replicas, Queue are predicate-forced (must apply Lessons 7/8/10 explicitly); DB cluster, internal cache are math-forced (multiple ways to satisfy).
+- **simplifications.md updates**: deferred to Part 15 (will add: Object Storage, search indices, geographic regions, real-time push, specialized services).
+
+### What this Part *didn't* address
+
+Still pending after Part 14:
+- **simplifications.md update** for what Lesson 10 STILL defers (media, search, real-time, geographic regions).
+- **A play session on Lesson 10 with failure injection across the full 17-node architecture** — the most visceral demo of the curriculum so far.
+- **Component info entries** are good for cache:cdn but the `service:worker` and other role-aware components could use richer copy.
+
+
+
+## Session 1 Part 15 — 2026-05-12: focused CDN lesson, the start of a connectivity-layer arc (Lesson 3: ISP), a latent crash bug fixed, region visualizations after one false start, layout polish, and undo/redo. Big Part. Test count 284 → 299.
+
+### Focused CDN lesson — bumped twitterAtScale to 11
+
+Before the connectivity-layer work, the operator flagged that the CDN got introduced in the capstone (Lesson 10) without its own focused lesson. Slotted a new **Lesson 10 — "Add a CDN at the Edge"** in between Newsfeed Core (9) and Twitter at Scale (now 11). Same pattern as Lessons 4 (LB), 6 (DB LB), 7 (replicas): single-concept, motivates the primitive through workload pressure.
+
+Workload: 20k reads/sec, all reads, mean latency ≤ 5ms. The 5ms cap is what mathematically forces the CDN — even with cache hit rate cranked to 0.99, the LB → App → Cache chain alone is ~24ms mean. With CDN absorbing 95% at ~1ms, the served average drops to ~2.5ms. Plus a `hasCdn` predicate so a player can't tune their way out of the lesson.
+
+Canonical solution: 7 nodes (Client + CDN + LB + 2 Apps + Cache + DB). Math verified: avgLatency 2.45ms, p99 9.35ms. All targets met with comfortable margin.
+
+### Connectivity-layer arc — Lesson 3 (ISP) is in; 4 (peering) + 5 (Datacenter) still to come
+
+The operator flagged a real curriculum gap: Lesson 2 ends with "your home LAN is islanded" and Lesson 3 (old, now bumped to 4) starts with "a visitor on the public internet reaches your VPS." Nothing in between explains *how* the internet actually carries that traffic — ISPs, peering, the WAN, where servers physically live.
+
+Three new lessons planned. **Lesson 3 — "Reach the Internet"** landed in this Part:
+
+- New component: `isp`. Passthrough with `name` + `publicIpBlock` props.
+- Composition simulator extended: tracks `ispCount` and `routersWithIspCount`.
+- `lanIp.js` updated so ISP nodes don't get LAN IPs (they're upstream of the LAN, not on it).
+- Lesson takes the home network from Lesson 2 and asks the player to wire the Router → ISP. Pass criteria: Router exists, Computer is wired to it (carry-over from L2), ISP exists, Router→ISP edge exists.
+
+All downstream lessons shifted by 1 (3→4, 4→5, ..., 11→12). Lessons 4 (multi-ISP peering) and 5 (Datacenter container) are queued for future sessions per the [[feedback-pause-to-play-cadence]] rule.
+
+### The latent crash bug — TRASH_SLOTS undefined
+
+While playing Lesson 3, the operator hit *"the whole site crashes if i hover the component over the trash icon and leave it there without moving."*
+
+Root cause in `Canvas.jsx`:
+```js
+setTrashSlot((s) => (s + 1) % TRASH_SLOTS.length);
+```
+
+`TRASH_SLOTS` was never defined anywhere in the file. The reference only fires when the 2-second relocate timer hits — which only happens when the player hovers the bin without moving. ReferenceErrors thrown from inside a `setTimeout` callback can't be caught by React error boundaries, so it crashed the whole tree.
+
+Defined `TRASH_SLOT_COUNT = 4` matching the 4 anchor positions and swapped the reference. **This bug pre-existed the entire FAANG-prep arc** — it had been there since the trash UX landed in Part 5. Three sessions of work happened on top of it. It only surfaced because the operator finally did exactly the right "hover and wait" sequence to trigger it.
+
+The class of bug: "tests don't cover UI interaction." Our 290+ tests prove sim correctness; they prove nothing about DOM drag-and-drop behavior. The CLAUDE.md "use the feature in a browser before declaring done" rule applies here — playing the lessons (not just running tests) is what catches this class.
+
+### Visual region overlays — false start, then the right approach
+
+Operator asked for *"some kind of visual that shows components in the LAN is local VS the ISP component coming in from the outside world."* Pedagogically: the spatial metaphor of *where* things sit should signal *what network* they're in.
+
+**First attempt: regions as React Flow nodes.** Synthesized region nodes (translucent rectangles with labels) into the displayNodes list, prepended so they'd render behind interactive nodes. Marked `draggable: false`, `selectable: false`, `deletable: false`, etc. Filtered them in the simulator.
+
+It looked right at first, but the operator hit two bugs immediately:
+- *"the green LAN keeps moving"* — React Flow's `draggable: false` doesn't fully prevent state changes; some interaction path was nudging the region.
+- *"can't nest components into it"* — region was intercepting pointer events; dragging a Computer onto it didn't work right.
+
+**Diagnosis**: React Flow nodes are *fundamentally interactive*. Even with flags, they participate in measurement, selection management, drag detection, and the node-change apply loop. Trying to make a "non-interactive React Flow node" is fighting the framework. Wrong abstraction.
+
+**Second attempt (the one that worked): regions as viewport-overlay divs**, outside the React Flow node system entirely.
+
+- New `CanvasRegions` component subscribes to React Flow's internal transform via `useStore`.
+- Renders absolutely-positioned divs INSIDE the ReactFlow component (so the inset:0 positioning works).
+- Each region's screen position computed as `r.x * zoom + tx, r.y * zoom + ty` — moves with the canvas viewport.
+- `pointer-events: none` everywhere — fully transparent to interaction.
+- Not in the nodes list, so React Flow's drag/select/measurement logic never sees them.
+- Simulator never sees them either (separate codepath).
+
+The class of mistake: I tried to overload an existing abstraction (React Flow nodes) to do a job it wasn't designed for. Should have gone straight to the overlay div approach. The pattern *"regions are decoration, not data"* should have signaled "don't put them in the data."
+
+### fitBounds fix — initial view was wrong after switching to overlays
+
+The overlay approach has one consequence: `fitView` on the React Flow component only sees real nodes, so it would zoom into the small node-only bounding box, leaving regions off-screen on initial render.
+
+Fix: explicit `fitBounds` call in a `useEffect` that runs on puzzle switch. Computes union bounding box of nodes + regions. Calls `reactFlow.fitBounds()` with `duration: 0` (instant snap) wrapped in `setTimeout(0)` to win the race against React Flow's built-in fitView. No flicker, correct framing.
+
+### Layout polish — two passes
+
+After the regions landed, two iterative fixes:
+
+1. **"router and computer are overlapped. should not happen"** — Router at x=460, Computer at (60-480). 20px overlap. Bumped Router to x=500 (40px gap from Computer).
+
+2. **"looks scrunched"** — Even after fix 1, Router was 50px from Computer and 30px from LAN region's right edge. Widened LAN region to 880px wide, moved Router to (620, 160) — now 140px from Computer and 90px from LAN's right edge. Plus moved Internet region right (920+) and ISP to (1000, 180). Final layout has comfortable breathing room and the Router sits *visually* on the right edge of the LAN, "facing the Internet" — which is pedagogically correct for what a Router actually does (bridge between LAN and outside).
+
+### Undo / Redo
+
+Operator requested: *"we should have ctrl-z undo hook and undo button maybe."*
+
+Implementation: snapshot-based undo with 50-deep stack. Each user action calls `snapshot()` before mutating state — captures the current `{nodes, edges}` to a `past` stack. Undo pops `past`, restores state, pushes the previous state onto `future`. Redo reverses.
+
+Snapshot points (covered):
+- Drop a component from the palette
+- Connect a new edge / click edge to cycle R/W/R+W
+- Start dragging a node (captures pre-drag; one undo reverts the entire drag)
+- Property panel edit
+- Delete / Toggle failure / Reparent / Set port / Add hardware
+- Show solution / Reset
+
+Not snapshotted (intentional):
+- React Flow's internal measurement / dimension changes (transient, every render)
+- Continuous position updates during a drag (only the drag-start snapshot matters)
+- Puzzle switch (different context — clears history entirely)
+
+Keyboard hook: `Cmd/Ctrl+Z` = undo, `Shift+Cmd/Ctrl+Z` (or `Ctrl+Y`) = redo. Bypassed when focus is on an INPUT/TEXTAREA/SELECT so typing in property fields isn't interrupted.
+
+UI: "↶ Undo" button in PuzzleBar, disabled when `past` is empty (greyed out via new `:disabled` CSS).
+
+Known limitation: property edits snapshot per keystroke (one snapshot per character typed in a text input). Could coalesce with debouncing later if it becomes annoying. Acceptable for v1.
+
+### Decision-state log
+
+- **Focused CDN lesson before connectivity arc**: yes. Lesson 10 capstone shouldn't be the first time the player meets CDN.
+- **Regions as React Flow nodes vs overlay divs**: started with nodes (wrong); landed on overlay divs (right). Documented as a class-of-mistake learning.
+- **Connectivity-layer pacing**: ISP first, peering second, Datacenter third. Pause-to-play between. Per [[feedback-pause-to-play-cadence]].
+- **Undo coalescing**: defer. Per-keystroke snapshots acceptable for v1; revisit if operator finds it annoying.
+- **Render approach for regions**: keep them out of the data model entirely. Decoration ≠ data.
+
+### What this Part *didn't* address (still pending)
+
+- **Lesson 4 (multi-ISP peering)**: requires peering mechanic + multi-ISP graph traversal in the connectivity sim.
+- **Lesson 5 (Datacenter container)**: container type holding VPSes, like Computer for hardware.
+- **Upgrade old Lesson 3 (now 4) to use new components**: integrate ISP + Datacenter into the Visitor → Domain → VPS chain.
+- **Coalesce property-edit snapshots**: optional polish.
+- **Visual cascade indicator on failure injection**: when a node fails, the downstream stranded nodes could pulse red to make the failure cascade obvious.
+

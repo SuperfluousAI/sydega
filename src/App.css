@@ -1,0 +1,1164 @@
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* Puzzle bar (top) */
+.puzzle-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 24px;
+  padding: 16px 20px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+
+.puzzle-info h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lesson-pill {
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.puzzle-info p {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  max-width: 60ch;
+}
+
+.puzzle-targets {
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 8px;
+}
+
+.puzzle-targets strong {
+  color: var(--text);
+}
+
+.puzzle-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.primary-button {
+  background: #34d399;
+  color: #06281f;
+  border: 0;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.primary-button:hover { background: #4ade80; }
+
+.ghost-button {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ghost-button:hover:not(:disabled) { color: var(--text); }
+.ghost-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.danger-button {
+  margin-top: 12px;
+  width: 100%;
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid #4a1f1f;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.danger-button:hover { background: #2a1414; }
+
+.fail-button,
+.restore-button {
+  margin-top: 12px;
+  width: 100%;
+  background: transparent;
+  color: #fbbf24;
+  border: 1px solid #5a4218;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fail-button:hover { background: #2a2114; }
+.restore-button {
+  color: var(--good);
+  border-color: #1d4f3a;
+}
+.restore-button:hover { background: #142a20; }
+
+.puzzle-results {
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 260px;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+}
+
+.result-row strong {
+  color: var(--text);
+}
+
+.result-row--divider {
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.result-row-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.requirements {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.req.good { color: var(--good); }
+.req.bad { color: var(--bad); }
+.req-lesson {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-style: italic;
+  margin: 2px 0 4px 16px;
+  line-height: 1.4;
+}
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+.dim { color: var(--text-dim); }
+
+.warnings {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.warning {
+  color: #fbbf24;
+  font-size: 12px;
+}
+
+.banner.good {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--good);
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-top: 6px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.banner.celebrate {
+  animation: pop-in 0.6s cubic-bezier(0.16, 1, 0.3, 1), glow 1.2s ease-out;
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+}
+
+.celebrate-emoji {
+  display: inline-block;
+  animation: bounce 0.6s ease-out 0.1s;
+}
+
+@keyframes pop-in {
+  0%   { transform: scale(0.6); opacity: 0; }
+  60%  { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+@keyframes glow {
+  0%   { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50%  { box-shadow: 0 0 20px 6px rgba(52, 211, 153, 0.5); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+@keyframes bounce {
+  0%   { transform: translateY(0); }
+  30%  { transform: translateY(-6px) rotate(-12deg); }
+  60%  { transform: translateY(0) rotate(8deg); }
+  100% { transform: translateY(0) rotate(0); }
+}
+
+/* Body layout */
+.app-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 220px 1fr 260px;
+  min-height: 0;
+}
+
+/* Info pane — pedagogical context for the selected component. Rendered as
+   a top overlay INSIDE the canvas-wrapper so the explanation sits right
+   where the player is looking. Distinct from the right-side PropertyPanel
+   (which edits properties). */
+.canvas-info-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 15;
+  pointer-events: none; /* the wrapper passes clicks through; only the pane catches */
+}
+.canvas-info-overlay > .component-info {
+  pointer-events: auto;
+}
+
+.component-info {
+  max-height: 220px;
+  overflow-y: auto;
+  background: rgba(20, 18, 32, 0.92);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.component-info-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 20px 4px;
+}
+.component-info-empty p {
+  margin: 0;
+}
+.component-info-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.component-info-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.component-info-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.component-info-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px 24px;
+}
+.component-info-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.component-info-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.component-info-text {
+  color: var(--text);
+}
+
+/* Side panels */
+.palette,
+.property-panel {
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.property-panel {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+
+.panel-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.panel-hint {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.lessons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.lesson-item {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.lesson-item:hover {
+  background: #2a2a36;
+  color: var(--text);
+}
+
+.lesson-item.active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: #6366f1;
+  color: var(--text);
+}
+
+.lesson-item.completed .lesson-num {
+  background: var(--good);
+  color: #06281f;
+}
+
+.lesson-item.completed .lesson-title {
+  color: var(--text);
+}
+
+.lesson-num {
+  background: #6366f1;
+  color: #0b0a1a;
+  font-weight: 700;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.lesson-title {
+  flex: 1;
+  line-height: 1.3;
+}
+
+.palette-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.palette-item {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.palette-item:hover {
+  background: #2a2a36;
+}
+
+.palette-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.palette-label {
+  flex: 1;
+}
+
+.palette-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.more-components {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+
+.more-components-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  width: 100%;
+}
+
+.more-components-toggle:hover {
+  color: var(--text);
+}
+
+.more-components-caret {
+  font-size: 10px;
+  width: 10px;
+  text-align: center;
+}
+
+.more-components-label {
+  flex: 1;
+  text-align: left;
+}
+
+.more-components-count {
+  background: var(--bg-3);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.palette-items--muted {
+  opacity: 0.85;
+  margin-top: 8px;
+}
+
+.palette-item--muted {
+  background: transparent;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.palette-item--muted:hover {
+  background: #2a2a36;
+  opacity: 1;
+}
+
+.palette-flag input {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Property fields */
+.property-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.property-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text-dim);
+  gap: 4px;
+}
+
+.property-field input {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.property-field input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+/* Canvas */
+.canvas-wrapper {
+  position: relative;
+  background: var(--bg);
+}
+
+/* Drag-to-trash deletion zone. Visible only while a node is being dragged;
+   floats near the cursor (see TRASH_SLOTS in Canvas.jsx). Highlights when
+   hovered; if the player lingers, the bin slides to a different slot — the
+   premise is "they're moving past, not deleting." Releasing over the bin
+   deletes the node. */
+.canvas-trash {
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(127, 29, 29, 0.6);
+  border: 1px dashed rgba(248, 113, 113, 0.6);
+  color: #fca5a5;
+  border-radius: 8px;
+  font-size: 12px;
+  pointer-events: none;
+  user-select: none;
+}
+.canvas-trash.floating {
+  position: fixed;
+  /* Smooth slide when the slot rotates after a long hover. The left/top
+     transition timing is intentionally a bit slow so the relocation reads
+     as "moving away," not as instant teleport. */
+  transition: left 220ms ease, top 220ms ease,
+              background 120ms, border-color 120ms, transform 120ms;
+}
+.canvas-trash.hot {
+  background: rgba(220, 38, 38, 0.85);
+  border-color: #fca5a5;
+  border-style: solid;
+  color: #fff;
+  transform: scale(1.12);
+}
+.canvas-trash-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+.canvas-trash-label {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+/* Inline reading expander under the puzzle title (replaces the prior modal).
+   First-visit auto-expands; subsequent visits collapse. Click to toggle. */
+.reading-toggle {
+  margin-top: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.3px;
+}
+.reading-toggle:hover {
+  color: var(--text);
+}
+.reading-toggle-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+.reading-inline {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.reading-inline p {
+  margin: 0 0 10px;
+}
+.reading-inline p:last-child {
+  margin-bottom: 0;
+}
+
+/* Edge animations driven by arrow direction (see FloatingEdge.jsx).
+   The visible path picks one of these classes based on arrows.{source,target}.
+   "both" stacks a forward path with a reverse-animated overlay. */
+.react-flow__edge-path.edge-flow-forward {
+  stroke-dasharray: 5 5;
+  animation: edge-dash-forward 0.5s linear infinite;
+}
+.react-flow__edge-path.edge-flow-reverse {
+  stroke-dasharray: 5 5;
+  animation: edge-dash-reverse 0.5s linear infinite;
+}
+.react-flow__edge-path.edge-flow-static {
+  stroke-dasharray: 0;
+  animation: none;
+}
+@keyframes edge-dash-forward {
+  to { stroke-dashoffset: -10; }
+}
+@keyframes edge-dash-reverse {
+  to { stroke-dashoffset: 10; }
+}
+
+/* Endpoint click zones — either a visible dot OR the arrow, never both
+   (see FloatingEdge.jsx). Both states keep the same click target size so
+   toggling the arrow back off remains discoverable. */
+.edge-endpoint {
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+  z-index: 5;
+  width: 14px;
+  height: 14px;
+  transition: background 120ms, border-color 120ms, outline 120ms;
+}
+/* No arrow on this side → render an outlined dot the player can click to
+   ADD the arrow. */
+.edge-endpoint.as-dot {
+  background: transparent;
+  border: 2px solid #cbd5e1;
+}
+.edge-endpoint.as-dot:hover {
+  background: #fff;
+  border-color: #fff;
+}
+/* Arrow already on this side → the arrow IS the visual; the button is an
+   invisible hot zone. Hover reveals a faint outline so the player discovers
+   it can be clicked to remove the arrow. */
+.edge-endpoint.with-arrow {
+  background: transparent;
+  border: none;
+  width: 22px;
+  height: 22px;
+}
+.edge-endpoint.with-arrow:hover {
+  background: rgba(255, 255, 255, 0.12);
+  outline: 2px dashed rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
+}
+
+.react-flow {
+  background: var(--bg);
+}
+
+/* System node */
+.system-node {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 150px;
+  font-size: 12px;
+  color: var(--text);
+  /* See containerVisualBounds.test.js — without border-box the 1px border
+     extends the visible perimeter outside React-Flow's reported node bounds,
+     and the geometric perimeter intersection used by floating edges lands
+     1px inside the visible border. */
+  box-sizing: border-box;
+}
+
+/* Failure-injection visual: dim + grayscale, dashed border, "OFFLINE" pill. */
+.system-node.failed,
+.computer-frame.failed {
+  opacity: 0.45;
+  filter: grayscale(75%);
+  border-style: dashed !important;
+}
+
+.system-node-offline {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+.system-node-header {
+  padding: 6px 10px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #08060d;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+
+/* ⋯ menu, shared between system-node and computer-node */
+.node-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.node-menu-trigger {
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
+  border: 0;
+  border-radius: 4px;
+  width: 22px;
+  height: 18px;
+  line-height: 1;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.node-menu-trigger:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.node-menu-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 180px;
+  z-index: 1000;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.node-menu-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px 2px;
+}
+
+.node-menu-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.node-menu-option:hover {
+  background: var(--bg-3);
+}
+
+.system-node-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.system-node-summary {
+  color: var(--text-dim);
+}
+
+.system-node-sim {
+  font-size: 11px;
+  color: var(--good);
+}
+
+.system-node-sim.overloaded {
+  color: var(--bad);
+}
+
+/* Router rendering: a regular node (not a container) whose body shows the
+   LAN CIDR + a live list of wired devices with their assigned IPs. */
+.router-node {
+  min-width: 220px;
+}
+.router-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+}
+.router-cidr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.router-ip {
+  color: var(--good);
+}
+.router-ssid {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.router-port {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.router-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+}
+.router-device-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.router-device-label {
+  color: var(--text-dim);
+}
+.router-device-ip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--good);
+}
+.router-no-devices {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-dim);
+}
+.computer-lan-ip {
+  margin-left: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+/* Floating edges (see src/lib/edgeGeometry.js + src/components/FloatingEdge.jsx)
+   compute edge endpoints geometrically from each node's perimeter, so the
+   handle's specific position doesn't constrain where the edge "attaches" —
+   the edge ANCHORS at the perimeter wherever the geometry says it should.
+   Handles are kept only as drag-start affordances; they're small + dim by
+   default, more visible on hover/connection. */
+.react-flow__handle.floating-handle {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+  border: none;
+  opacity: 0;
+  transition: opacity 140ms, background 140ms, transform 140ms;
+}
+/* When the player hovers the node, surface the handles on all sides so they
+   know the perimeter is grabbable. Edges render at geometric intersections,
+   so the dot location is only a drag-START hint — any side works. */
+.system-node:hover .react-flow__handle.floating-handle,
+.computer-node:hover .react-flow__handle.floating-handle,
+.router-node:hover .react-flow__handle.floating-handle {
+  opacity: 0.6;
+  background: rgba(255, 255, 255, 0.7);
+}
+/* Use width/height for the hover bump — DO NOT touch transform here.
+   React Flow positions handles per-side via side-specific transforms
+   (translate(50%, -50%) for Right, translate(-50%, 50%) for Bottom, etc).
+   Overriding `transform` clobbers that positioning and yanks the handle
+   inward into the node body on hover. Tested in floatingHandles.test.jsx. */
+.react-flow__handle.floating-handle:hover {
+  opacity: 1;
+  background: #fff;
+  width: 14px;
+  height: 14px;
+}
+
+/* Computer (container) node — outer is just a positioning context.
+   The visible frame lives on .computer-frame so it can animate without
+   moving the header text inside .computer-content. */
+.computer-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  pointer-events: all;
+}
+
+.computer-frame {
+  position: absolute;
+  /* Default inset 0; the four custom properties let the frame extend OUTSIDE
+     the underlying node bounds when a child is poking past an edge. R6: the
+     banner (.computer-header) lives inside this element so it resizes with it. */
+  top:    calc(-1 * var(--over-top, 0px));
+  right:  calc(-1 * var(--over-right, 0px));
+  bottom: calc(-1 * var(--over-bottom, 0px));
+  left:   calc(-1 * var(--over-left, 0px));
+  /* CRITICAL: border-box keeps the 2px border INSIDE the 340×220 React-Flow
+     bounds. Without this the visible frame extends 2px past the bounds on
+     each side, edges anchor at the bounds (2px inside the visible border),
+     and the line VISUALLY ends inside the Computer. Pinned by a test in
+     containerVisualBounds.test.js. */
+  box-sizing: border-box;
+  background: rgba(148, 163, 184, 0.06);
+  border: 2px dashed #94a3b8;
+  border-radius: 12px;
+  pointer-events: none;
+  transition: border-color 0.15s ease-out, box-shadow 0.15s ease-out,
+              top 0.06s ease-out, right 0.06s ease-out,
+              bottom 0.06s ease-out, left 0.06s ease-out;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The frame itself doesn't receive pointer events (so clicks pass through to
+   the canvas and to child nodes), but the banner and hint inside it do. */
+.computer-frame > .computer-header,
+.computer-frame > .computer-hint,
+.computer-frame > .ripple-origin {
+  pointer-events: auto;
+}
+
+/* .computer-content removed in favor of .computer-header / .computer-hint
+   living directly inside .computer-frame (R6). */
+
+/* Smooth resize on the React Flow node wrapper so the container animates
+   back when the reflow shrinks it. Targeting both width AND height. */
+.react-flow__node-system {
+  transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* When a sibling node is being scooted out of the way, animate its position
+   change so it slides rather than snaps. Class is added briefly after the
+   scoot fires, then removed. */
+.react-flow__node-system.scooting {
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              width 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Directional stretch when a child is being pulled past one of the parent's
+   sides. The container itself scales toward the escape direction (transform-
+   origin pinned to the opposite side), with a fast oscillation that gives a
+   rubber-band feel. Reflow handles the actual width/height growth; this is
+   the tactile overlay. */
+/* Frame (perimeter) stretches toward the leaving child. Only the visual frame
+   transforms; the header + hint text inside .computer-content stay still. The
+   keyframes oscillate between two stretched scales so the perimeter looks
+   like it's straining to wrap around the escaping component. */
+.computer-frame.stretching {
+  transform-origin: var(--stretch-origin-x, 50%) var(--stretch-origin-y, 50%);
+  animation: stretch-wobble 0.18s ease-in-out infinite;
+  border-color: #fbbf24;
+  border-style: solid;
+  box-shadow: 0 0 18px 3px rgba(251, 191, 36, 0.45);
+}
+
+@keyframes stretch-wobble {
+  0%, 100% {
+    transform: scale(
+      calc(1 + (var(--stretch-x, 1) - 1) * 0.4),
+      calc(1 + (var(--stretch-y, 1) - 1) * 0.4)
+    );
+  }
+  50% {
+    transform: scale(var(--stretch-x, 1), var(--stretch-y, 1));
+  }
+}
+
+/* Water-ripple effect: when a child becomes attached, the parent's frame
+   pulses outward — box-shadow expands like a wave on a water surface, plus
+   a subtle scale pulse. The new child's drop point is the "stone"; the
+   parent itself is the water that ripples in response. */
+.computer-frame.rippling {
+  animation: frame-ripple 0.95s ease-out;
+}
+
+@keyframes frame-ripple {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.55),
+                0 0 0 0 rgba(34, 211, 238, 0.35);
+    transform: scale(1);
+  }
+  40% {
+    box-shadow: 0 0 0 10px rgba(34, 211, 238, 0.30),
+                0 0 0 20px rgba(34, 211, 238, 0.15);
+    transform: scale(1.015);
+  }
+  100% {
+    box-shadow: 0 0 0 26px rgba(34, 211, 238, 0),
+                0 0 0 36px rgba(34, 211, 238, 0);
+    transform: scale(1);
+  }
+}
+
+.computer-frame.selected {
+  border-style: solid;
+  box-shadow: 0 0 0 2px #94a3b8;
+}
+
+.computer-header {
+  padding: 6px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #08060d;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+}
+
+.computer-header > .node-menu {
+  margin-left: 4px;
+}
+
+.computer-resources {
+  font-size: 11px;
+  font-weight: 600;
+  color: #08060d;
+  opacity: 0.75;
+}
+
+.computer-hint {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+  pointer-events: none;
+}
+
+/* Ensure child nodes render above the container body */
+.react-flow__node-system {
+  z-index: 1;
+}
+.react-flow__node-system[data-parent-id] {
+  z-index: 2;
+}
+
+/* Reading overlay (the "book" panel) */
+.reading-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 6, 13, 0.7);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fade-in 0.2s ease-out;
+}
+
+.reading-panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(680px, 92vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: pop-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reading-header {
+  padding: 18px 24px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.reading-header h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 18px;
+}
+
+.reading-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 18px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.reading-close:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.reading-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.reading-body p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+
+.reading-body p:last-child {
+  margin-bottom: 0;
+}
+
+.reading-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+@keyframes fade-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
