@@ -978,17 +978,41 @@ export const puzzles = {
     order: 14,
     title: 'Stream Processing at Scale (Design Kafka)',
     blurb:
-      'Design a distributed commit log — what Kafka is. 60,000 events/sec inbound. The trap: scaling the Worker pool downstream of a single Queue almost works, but it\'s the wrong shape. The right shape is *partition the stream*: a Partition Router (Load Balancer) fans writes across N partitioned Queues; one Consumer (Worker) per partition forms the Consumer Group. Partition count = parallelism ceiling. The Queue\'s property panel now shows replicationFactor and acks — these are teaching aids surfaced from real Kafka deployments (RF=3, acks=all are industry defaults); the sim doesn\'t model leader-follower replication or ISR mechanics, but the values are what a candidate would call out in an interview. (Simplifications.md covers the deep-dive answers: ISR, leader election, acks tradeoffs, multi-consumer-group, the "5 reasons Kafka is fast" nuance.)',
+      'Design a distributed commit log — what Kafka is. Three producer services emit 60,000 events/sec total. The canonical answer needs five interlocking ideas: (1) **partition the topic** — a Partition Router (Load Balancer) hashes events into N partitioned Queues, with `pubsub: true` so each partition is a real Kafka topic (every consumer group sees every event); (2) **distribute partitions across brokers** — broker regions on the canvas show where each partition\'s leader lives and where its RF=3 replicas (decorative markers) sit on the *other* brokers, the durability story Kafka rests on; (3) **multiple consumer groups** — the same partitioned topic feeds an independent real-time consumer group and an analytics consumer group, each draining the full stream (this is *the* Kafka-vs-RabbitMQ differentiator); (4) **shared sink cluster per group** — workers → Storage LB → 3-DB cluster (reuses Lesson 6\'s routing pattern on the sink side); (5) **a control plane** — the KRaft Controllers decorative node coordinates leader election + ISR tracking. Property panel teaching aids cover acks=all + min.insync.replicas semantics. (Simplifications.md covers what we don\'t model mechanically: ISR pull-based replication, the high watermark, unclean leader election, sequential I/O + zero-copy + page cache, partition immutability.)',
     kind: 'flow',
+    regions: [
+      // Topic region wraps the partition column. It overlaps the broker
+      // regions intentionally — the topic *is* the set of partitions across
+      // brokers; the visual overlap makes that "spread over brokers" story
+      // legible. Light alpha (8%) keeps things readable.
+      { id: 'r-topic', label: 'Topic: events', color: '#a855f7', x: 380, y: -80, w: 360, h: 1480 },
+      // 3 broker regions — each holds 2 leader partitions + 4 follower
+      // replica markers. Replica layout: P0 leads B0, replicas on B1+B2;
+      // P1 leads B1, replicas on B0+B2; etc. This is the standard 3-broker,
+      // 6-partition, RF=3 balanced layout.
+      { id: 'r-broker-0', label: 'Broker 0  ·  Leaders: P0, P3  ·  Followers: P1, P2, P4, P5', color: '#f97316', x: 360, y: -40, w: 500, h: 440 },
+      { id: 'r-broker-1', label: 'Broker 1  ·  Leaders: P1, P4  ·  Followers: P0, P2, P3, P5', color: '#f97316', x: 360, y: 440, w: 500, h: 440 },
+      { id: 'r-broker-2', label: 'Broker 2  ·  Leaders: P2, P5  ·  Followers: P0, P1, P3, P4', color: '#f97316', x: 360, y: 920, w: 500, h: 440 },
+      // Consumer group regions — each wraps its 6 workers + storage LB +
+      // 3 DBs. Real-time on top, analytics below; same 6-worker shape
+      // because each group reads all 6 partitions independently
+      // (pubsub: true on every partition Queue makes this work in the sim).
+      { id: 'r-group-rt', label: 'Consumer Group: real-time (60k events/sec)', color: '#10b981', x: 880, y: -20, w: 580, h: 660 },
+      { id: 'r-group-an', label: 'Consumer Group: analytics (60k events/sec independent stream)', color: '#10b981', x: 880, y: 700, w: 580, h: 660 },
+    ],
     allowedComponents: [
       'client',
       'loadBalancer',
       'queue',
       { type: 'service', role: 'worker' },
       'database',
+      'kafkaReplica',
+      'kafkaController',
     ],
     initialNodes: () => [
-      node('producers', 'client', { x: 40, y: 320 }, { rps: 60000, readRatio: 0 }),
+      node('events-svc-a', 'client', { x: 40, y: 120 }, { rps: 20000, readRatio: 0 }),
+      node('events-svc-b', 'client', { x: 40, y: 320 }, { rps: 20000, readRatio: 0 }),
+      node('events-svc-c', 'client', { x: 40, y: 520 }, { rps: 20000, readRatio: 0 }),
     ],
     requirements: [
       {
@@ -996,106 +1020,230 @@ export const puzzles = {
         label: 'Sync success rate ≥ 99% (producers ack at the partition)',
         test: (r) => r.successRate >= 0.99,
         lesson:
-          'Producers write 60k events/sec. Each event must reach a partition (Queue). If sync success drops, the Partition Router ' +
-          'capacity is exceeded — or you\'re not actually wiring producers through a router (Q5: load balancing across nodes).',
+          'Producers write 60k events/sec aggregate. Each event must reach a partition (Queue). If sync success drops, the ' +
+          'Partition Router capacity is exceeded — or producers aren\'t wired through a router. (Q5: load balancing across nodes.)',
       },
       {
         key: 'asyncSuccess',
-        label: 'Background success ≥ 99% (consumer group drains the partitions)',
+        label: 'Background success ≥ 99% (both consumer groups drain independently)',
         test: (r) => r.backgroundSuccessRate >= 0.99,
         lesson:
-          'Each Queue (partition) feeds a Worker (consumer). 60k events/sec across 6 partitions means each Worker processes ' +
-          '10k/sec. Default Worker cap is 50 — way under what each partition emits. Either add more Workers per partition or ' +
-          'bump each Worker\'s capacity. The pedagogically correct shape is *one Worker per partition*.',
+          'Each pubsub Queue (partition) emits its full rate to every downstream consumer group. With 6 partitions × 2 groups ' +
+          '× 10k events/sec/partition = 120k background-attempted. Each group needs cap for 60k aggregate (6 workers × 10k) ' +
+          'feeding a sink that absorbs 60k. If either group under-provisions workers or sinks, this metric drops.',
       },
       {
         key: 'hasPartitionedTopic',
         label: 'Has at least 4 Queues (partitioned topic)',
         predicate: { kind: 'presence', type: 'queue', min: 4 },
         lesson:
-          'A single Queue can\'t scale beyond what one Worker (or one pool draining it) can absorb — and ordering within a ' +
-          'stream is per-partition only. Real Kafka splits a topic into N partitions for parallelism. Drop more Queues ' +
-          'representing partitions. (Q5: partitioning.)',
+          'A single Queue caps parallelism — ordering is per-partition only. Real Kafka splits a topic into N partitions for ' +
+          'linear scaling. Drop Queues representing partitions, each with `pubsub: true` so multiple consumer groups can ' +
+          'read the same data independently. (Q5: partitioning.)',
       },
       {
         key: 'hasPartitionRouter',
         label: 'Has a Partition Router (Load Balancer fans writes across Queues)',
         predicate: { kind: 'presence', type: 'loadBalancer', min: 1 },
         lesson:
-          'Real Kafka\'s producer library hashes the message key to pick a partition. We model that explicitly with a Load ' +
-          'Balancer between Producers and the partitioned Queues — same shape as Lesson 6\'s DB cluster routing, ' +
-          'now applied to a Queue cluster. Without a router, producers either pile onto one partition or fan-out indiscriminately.',
+          'Real Kafka\'s producer library hashes the message key to pick a partition. We model that with a Load Balancer ' +
+          'between Producers and the partitioned Queues — same routing-to-cluster pattern as Lesson 6, applied to the topic ' +
+          'cluster. Without it, producers fan-out indiscriminately or pile onto one partition.',
       },
       {
         key: 'hasConsumerGroup',
-        label: 'Consumer Group: at least 4 Workers downstream of the partitions',
+        label: 'Consumer Groups: at least 4 Workers reading the partitions',
         predicate: { kind: 'presence', type: 'service', role: 'worker', min: 4 },
         lesson:
           'A Kafka Consumer Group runs one consumer per partition for parallelism. With 6 partitions you can have up to 6 ' +
-          'workers in the group, each draining its own partition. More workers than partitions means the extras sit idle.',
+          'workers per group. More than 6 = idle consumers (partition count is the parallelism ceiling).',
+      },
+      {
+        key: 'hasMultipleConsumerGroups',
+        label: 'At least 2 independent consumer groups (the Kafka vs RabbitMQ differentiator)',
+        predicate: { kind: 'metric', name: 'consumerGroupCount', op: '>=', value: 2 },
+        lesson:
+          'The defining Kafka feature: multiple consumer groups read the same topic independently, each tracking its own ' +
+          'offset. Real-time analytics + batch ETL + fraud detection all read the same partitioned stream without coordinating. ' +
+          'Tag each Worker with its `consumerGroup` (e.g. "realtime", "analytics") in the property panel. (Q2: Kafka vs RabbitMQ.)',
       },
       {
         key: 'hasStorage',
         label: 'Has at least one Database (persisted stream output)',
         predicate: { kind: 'presence', type: 'database', min: 1 },
         lesson:
-          'Stream processing isn\'t complete until events land somewhere durable. Real pipelines write to S3 / Elasticsearch / ' +
-          'analytics warehouses / Parquet on a data lake. Add a Database downstream of the consumer group.',
+          'Stream processing isn\'t complete until events land somewhere durable. The canonical shape reuses Lesson 6\'s ' +
+          'cluster pattern on the sink side: each group\'s workers write through a Storage Load Balancer into a 3-DB cluster. ' +
+          'Real pipelines write to S3 / Elasticsearch / analytics warehouses / Parquet on a data lake.',
+      },
+      {
+        key: 'hasReplicaTopology',
+        label: 'Shows replica topology: at least 6 Replica markers across brokers',
+        predicate: { kind: 'presence', type: 'kafkaReplica', min: 6 },
+        lesson:
+          'Each partition has RF=3 copies — 1 leader + 2 follower replicas, distributed across separate brokers. The replica ' +
+          'markers are decorative (sim ignores them) but they encode the durability story: if a broker fails, every partition ' +
+          'leader on that broker is re-elected from its in-sync followers on the other brokers. Drop replica markers inside ' +
+          'each broker region to depict where each partition\'s followers live. (Q5: fault tolerance, partitioning.)',
+      },
+      {
+        key: 'hasController',
+        label: 'Has a Controller (KRaft) for cluster coordination',
+        predicate: { kind: 'presence', type: 'kafkaController', min: 1 },
+        lesson:
+          'Brokers coordinate through a Raft-replicated controller quorum (KRaft in modern Kafka; Zookeeper in older ' +
+          'deployments). The controller owns cluster metadata: partition leadership, ISR membership, topic configs. Drop one ' +
+          'KRaft Controllers node to show the control plane exists. (Q5: fault tolerance — leader election runs through here.)',
       },
     ],
-    solution: () => ({
-      // 60,000 events/sec partitioned across 6 Queues (= 10,000 events/sec each).
-      // Each partition gets one Worker in the Consumer Group (cap 10,000) draining
-      // it. Each Worker writes to its dedicated Storage DB (cap 10,000). The
-      // partition count is the parallelism ceiling at every layer.
+    solution: () => {
+      // 3 producer services × 20k events/sec = 60k aggregate writes.
+      // Router (cap 60k) fans into 6 partitions at 10k each.
+      // Each partition is pubsub:true → emits full 10k to BOTH consumer
+      // groups' matching workers. Background-attempted = 60k × 2 = 120k.
       //
-      // Verified: sync 100% (60k → router fans to 6 queues, each accepts 10k);
-      // background 100% (each Worker drains 10k → DB accepts 10k); avgP99 minimal
-      // since this is a write-heavy pipeline through fast hops.
-      nodes: [
-        node('producers', 'client', { x: 40, y: 320 }, { rps: 60000, readRatio: 0 }),
-        node('partition-router', 'loadBalancer', { x: 240, y: 320 }, { capacity: 60000 }),
-        node('partition-0', 'queue', { x: 460, y: 40 }, { topic: 'events' }),
-        node('partition-1', 'queue', { x: 460, y: 140 }),
-        node('partition-2', 'queue', { x: 460, y: 240 }),
-        node('partition-3', 'queue', { x: 460, y: 340 }),
-        node('partition-4', 'queue', { x: 460, y: 440 }),
-        node('partition-5', 'queue', { x: 460, y: 540 }),
-        node('consumer-0', 'service', { x: 680, y: 40 }, { role: 'worker', capacity: 10000 }),
-        node('consumer-1', 'service', { x: 680, y: 140 }, { role: 'worker', capacity: 10000 }),
-        node('consumer-2', 'service', { x: 680, y: 240 }, { role: 'worker', capacity: 10000 }),
-        node('consumer-3', 'service', { x: 680, y: 340 }, { role: 'worker', capacity: 10000 }),
-        node('consumer-4', 'service', { x: 680, y: 440 }, { role: 'worker', capacity: 10000 }),
-        node('consumer-5', 'service', { x: 680, y: 540 }, { role: 'worker', capacity: 10000 }),
-        node('storage-0', 'database', { x: 920, y: 40 }, { capacity: 10000 }),
-        node('storage-1', 'database', { x: 920, y: 140 }, { capacity: 10000 }),
-        node('storage-2', 'database', { x: 920, y: 240 }, { capacity: 10000 }),
-        node('storage-3', 'database', { x: 920, y: 340 }, { capacity: 10000 }),
-        node('storage-4', 'database', { x: 920, y: 440 }, { capacity: 10000 }),
-        node('storage-5', 'database', { x: 920, y: 540 }, { capacity: 10000 }),
-      ],
-      edges: [
-        edge('producers', 'partition-router'),
-        edge('partition-router', 'partition-0'),
-        edge('partition-router', 'partition-1'),
-        edge('partition-router', 'partition-2'),
-        edge('partition-router', 'partition-3'),
-        edge('partition-router', 'partition-4'),
-        edge('partition-router', 'partition-5'),
-        edge('partition-0', 'consumer-0'),
-        edge('partition-1', 'consumer-1'),
-        edge('partition-2', 'consumer-2'),
-        edge('partition-3', 'consumer-3'),
-        edge('partition-4', 'consumer-4'),
-        edge('partition-5', 'consumer-5'),
-        edge('consumer-0', 'storage-0'),
-        edge('consumer-1', 'storage-1'),
-        edge('consumer-2', 'storage-2'),
-        edge('consumer-3', 'storage-3'),
-        edge('consumer-4', 'storage-4'),
-        edge('consumer-5', 'storage-5'),
-      ],
-    }),
+      // Real-time group:  6 workers (cap 10k) → storage-lb-rt (cap 60k)
+      //                    → 3 DBs (cap 20k each) — drains 60k aggregate.
+      // Analytics group:  same shape — independently drains 60k aggregate.
+      //
+      // Replica topology (RF=3, 6 partitions, 3 brokers, balanced):
+      //   P0 lives on B0 (leader), B1 (follower), B2 (follower)
+      //   P1 lives on B1 (leader), B0 (follower), B2 (follower)
+      //   P2 lives on B2 (leader), B0 (follower), B1 (follower)
+      //   P3 lives on B0 (leader), B1 (follower), B2 (follower)
+      //   P4 lives on B1 (leader), B0 (follower), B2 (follower)
+      //   P5 lives on B2 (leader), B0 (follower), B1 (follower)
+      //
+      // We render leader Queues at x=440 and follower replica markers at
+      // x=640 inside the broker region they belong to.
+      //
+      // Verified: sync 100% (60k accepted at router → 60k accepted at queues);
+      // background 100% (120k attempted → 120k served across both sinks).
+      const replicaMarker = (id, partition, broker, leaderId, x, y) =>
+        node(id, 'kafkaReplica', { x, y }, { partition, broker, isLeader: 'no', replicaOf: leaderId });
+      return {
+        nodes: [
+          // Producers — y-spread to match the 3 broker bands they fan across
+          node('events-svc-a', 'client', { x: 40, y: 200 }, { rps: 20000, readRatio: 0 }),
+          node('events-svc-b', 'client', { x: 40, y: 680 }, { rps: 20000, readRatio: 0 }),
+          node('events-svc-c', 'client', { x: 40, y: 1160 }, { rps: 20000, readRatio: 0 }),
+          node('partition-router', 'loadBalancer', { x: 220, y: 680 }, { capacity: 60000 }),
+
+          // KRaft Controllers (decorative) — sits above the router visually
+          node('kraft-controllers', 'kafkaController', { x: 220, y: 80 }, {}),
+
+          // Broker 0 band (y=-40..400): leaders P0 + P3, follower replicas for P1 P2 P4 P5
+          node('partition-0', 'queue', { x: 440, y: 80 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          node('partition-3', 'queue', { x: 440, y: 260 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          replicaMarker('rep-P1-B0', 'P1', 'B0', 'partition-1', 660, 40),
+          replicaMarker('rep-P2-B0', 'P2', 'B0', 'partition-2', 660, 140),
+          replicaMarker('rep-P4-B0', 'P4', 'B0', 'partition-4', 660, 240),
+          replicaMarker('rep-P5-B0', 'P5', 'B0', 'partition-5', 660, 340),
+
+          // Broker 1 band (y=440..880): leaders P1 + P4, follower replicas for P0 P2 P3 P5
+          node('partition-1', 'queue', { x: 440, y: 560 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          node('partition-4', 'queue', { x: 440, y: 740 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          replicaMarker('rep-P0-B1', 'P0', 'B1', 'partition-0', 660, 520),
+          replicaMarker('rep-P2-B1', 'P2', 'B1', 'partition-2', 660, 620),
+          replicaMarker('rep-P3-B1', 'P3', 'B1', 'partition-3', 660, 720),
+          replicaMarker('rep-P5-B1', 'P5', 'B1', 'partition-5', 660, 820),
+
+          // Broker 2 band (y=920..1360): leaders P2 + P5, follower replicas for P0 P1 P3 P4
+          node('partition-2', 'queue', { x: 440, y: 1040 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          node('partition-5', 'queue', { x: 440, y: 1220 }, { topic: 'events', pubsub: true, minInsyncReplicas: 2 }),
+          replicaMarker('rep-P0-B2', 'P0', 'B2', 'partition-0', 660, 1000),
+          replicaMarker('rep-P1-B2', 'P1', 'B2', 'partition-1', 660, 1100),
+          replicaMarker('rep-P3-B2', 'P3', 'B2', 'partition-3', 660, 1200),
+          replicaMarker('rep-P4-B2', 'P4', 'B2', 'partition-4', 660, 1300),
+
+          // Consumer Group: real-time (top band y=-20..620)
+          node('worker-rt-0', 'service', { x: 900, y: 40 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('worker-rt-1', 'service', { x: 900, y: 140 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('worker-rt-2', 'service', { x: 900, y: 240 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('worker-rt-3', 'service', { x: 900, y: 340 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('worker-rt-4', 'service', { x: 900, y: 440 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('worker-rt-5', 'service', { x: 900, y: 540 }, { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+          node('storage-lb-rt', 'loadBalancer', { x: 1140, y: 280 }, { capacity: 60000 }),
+          node('rt-db-0', 'database', { x: 1360, y: 140 }, { capacity: 20000 }),
+          node('rt-db-1', 'database', { x: 1360, y: 290 }, { capacity: 20000 }),
+          node('rt-db-2', 'database', { x: 1360, y: 440 }, { capacity: 20000 }),
+
+          // Consumer Group: analytics (bottom band y=700..1360)
+          node('worker-an-0', 'service', { x: 900, y: 760 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('worker-an-1', 'service', { x: 900, y: 860 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('worker-an-2', 'service', { x: 900, y: 960 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('worker-an-3', 'service', { x: 900, y: 1060 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('worker-an-4', 'service', { x: 900, y: 1160 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('worker-an-5', 'service', { x: 900, y: 1260 }, { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+          node('storage-lb-an', 'loadBalancer', { x: 1140, y: 1000 }, { capacity: 60000 }),
+          node('an-db-0', 'database', { x: 1360, y: 860 }, { capacity: 20000 }),
+          node('an-db-1', 'database', { x: 1360, y: 1010 }, { capacity: 20000 }),
+          node('an-db-2', 'database', { x: 1360, y: 1160 }, { capacity: 20000 }),
+        ],
+        edges: [
+          // Replication edges (Lesson 14): leader Queue → each of its 2
+          // follower replicas. Sim filters these out (target is decorative)
+          // but they render as dashed muted lines so the reader can see
+          // which replica belongs to which leader at a glance.
+          edge('partition-0', 'rep-P0-B1', 'replication'),
+          edge('partition-0', 'rep-P0-B2', 'replication'),
+          edge('partition-1', 'rep-P1-B0', 'replication'),
+          edge('partition-1', 'rep-P1-B2', 'replication'),
+          edge('partition-2', 'rep-P2-B0', 'replication'),
+          edge('partition-2', 'rep-P2-B1', 'replication'),
+          edge('partition-3', 'rep-P3-B1', 'replication'),
+          edge('partition-3', 'rep-P3-B2', 'replication'),
+          edge('partition-4', 'rep-P4-B0', 'replication'),
+          edge('partition-4', 'rep-P4-B2', 'replication'),
+          edge('partition-5', 'rep-P5-B0', 'replication'),
+          edge('partition-5', 'rep-P5-B1', 'replication'),
+          // Producers fan into router
+          edge('events-svc-a', 'partition-router'),
+          edge('events-svc-b', 'partition-router'),
+          edge('events-svc-c', 'partition-router'),
+          // Router fans across 6 partition leaders
+          edge('partition-router', 'partition-0'),
+          edge('partition-router', 'partition-1'),
+          edge('partition-router', 'partition-2'),
+          edge('partition-router', 'partition-3'),
+          edge('partition-router', 'partition-4'),
+          edge('partition-router', 'partition-5'),
+          // Each partition (pubsub:true) emits full rate to BOTH groups' matching worker
+          edge('partition-0', 'worker-rt-0'),
+          edge('partition-0', 'worker-an-0'),
+          edge('partition-1', 'worker-rt-1'),
+          edge('partition-1', 'worker-an-1'),
+          edge('partition-2', 'worker-rt-2'),
+          edge('partition-2', 'worker-an-2'),
+          edge('partition-3', 'worker-rt-3'),
+          edge('partition-3', 'worker-an-3'),
+          edge('partition-4', 'worker-rt-4'),
+          edge('partition-4', 'worker-an-4'),
+          edge('partition-5', 'worker-rt-5'),
+          edge('partition-5', 'worker-an-5'),
+          // Real-time group sink
+          edge('worker-rt-0', 'storage-lb-rt'),
+          edge('worker-rt-1', 'storage-lb-rt'),
+          edge('worker-rt-2', 'storage-lb-rt'),
+          edge('worker-rt-3', 'storage-lb-rt'),
+          edge('worker-rt-4', 'storage-lb-rt'),
+          edge('worker-rt-5', 'storage-lb-rt'),
+          edge('storage-lb-rt', 'rt-db-0'),
+          edge('storage-lb-rt', 'rt-db-1'),
+          edge('storage-lb-rt', 'rt-db-2'),
+          // Analytics group sink
+          edge('worker-an-0', 'storage-lb-an'),
+          edge('worker-an-1', 'storage-lb-an'),
+          edge('worker-an-2', 'storage-lb-an'),
+          edge('worker-an-3', 'storage-lb-an'),
+          edge('worker-an-4', 'storage-lb-an'),
+          edge('worker-an-5', 'storage-lb-an'),
+          edge('storage-lb-an', 'an-db-0'),
+          edge('storage-lb-an', 'an-db-1'),
+          edge('storage-lb-an', 'an-db-2'),
+        ],
+      };
+    },
   },
 
   tinyurlAtScale: {

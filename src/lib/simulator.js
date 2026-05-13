@@ -10,6 +10,14 @@ import { componentTypes, metaFor } from './componentTypes.js';
 import { assignLanIps } from './lanIp.js';
 
 export function simulate(puzzle, nodes, edges) {
+  // Clone nodes upfront so internal mutations (Lesson 14 leader promotion,
+  // _healthyReplicas counting) don't leak back into the caller's state.
+  // Shallow-clone node + data + config; that's all we need to write to.
+  nodes = nodes.map((n) => ({
+    ...n,
+    data: { ...n.data, config: { ...(n.data?.config || {}) } },
+  }));
+
   // Region nodes are UI-only (visual zone labels — see Lesson 3's "Your LAN"
   // / "The Internet" backgrounds). They never participate in simulation.
   nodes = nodes.filter((n) => n.type !== 'region');
@@ -21,13 +29,95 @@ export function simulate(puzzle, nodes, edges) {
   // because their visual treatment comes from `data.failed`, not sim output.
   const failedIds = new Set();
   for (const n of nodes) if (n.data?.failed) failedIds.add(n.id);
+
+  // Lesson 14 — failure-driven leader promotion (Phase 3 of the Kafka
+  // fault-tolerance story). For every failed Queue (a partition leader),
+  // find a healthy kafkaReplica whose `replicaOf` points at it. Promote
+  // that replica to act as the new leader: rewrite its type to 'queue',
+  // copy the leader's config, and rebind every edge that referenced the
+  // failed leader to reference the promoted replica instead. The leader
+  // election is deterministic (first healthy replica by id).
+  const promotionMap = new Map(); // failedLeaderId -> promoted replica id
+  if (failedIds.size > 0) {
+    for (const id of failedIds) {
+      const leader = nodes.find((n) => n.id === id);
+      if (!leader || leader.data?.type !== 'queue') continue;
+      const candidates = nodes
+        .filter(
+          (n) =>
+            n.data?.type === 'kafkaReplica' &&
+            n.data?.config?.replicaOf === id &&
+            !failedIds.has(n.id)
+        )
+        .sort((a, b) => (a.id < b.id ? -1 : 1));
+      if (candidates.length === 0) continue;
+      const promoted = candidates[0];
+      // Mutate the promoted node in place — type becomes a regular queue,
+      // config inherits the failed leader's queue config. The original
+      // kafkaReplica fields stay on data.config (harmless extras).
+      promoted.data = {
+        ...promoted.data,
+        type: 'queue',
+        config: { ...leader.data.config, ...promoted.data.config },
+      };
+      promotionMap.set(id, promoted.id);
+    }
+    if (promotionMap.size > 0) {
+      edges = edges.map((e) => {
+        const newSource = promotionMap.get(e.source) || e.source;
+        const newTarget = promotionMap.get(e.target) || e.target;
+        if (newSource === e.source && newTarget === e.target) return e;
+        return { ...e, source: newSource, target: newTarget };
+      });
+    }
+  }
+
   if (failedIds.size > 0) {
     nodes = nodes.filter((n) => !failedIds.has(n.id));
     edges = edges.filter((e) => !failedIds.has(e.source) && !failedIds.has(e.target));
   }
+
+  // Lesson 14 Phase 1 — count the in-sync replicas backing each leader
+  // Queue. We stash the count on the leader node itself so simulateFlow
+  // can enforce minInsyncReplicas when computing accept capacity. After
+  // promotion, replicas pointing at a former leader id move their
+  // allegiance to the promoted replacement.
+  for (const n of nodes) {
+    if (n.data?.type === 'queue') n._healthyReplicas = 0;
+  }
+  for (const n of nodes) {
+    if (n.data?.type !== 'kafkaReplica') continue;
+    const oldLeader = n.data?.config?.replicaOf;
+    if (!oldLeader) continue;
+    const effectiveLeader = promotionMap.get(oldLeader) || oldLeader;
+    const leaderNode = nodes.find((x) => x.id === effectiveLeader);
+    if (leaderNode && leaderNode.data?.type === 'queue') {
+      leaderNode._healthyReplicas = (leaderNode._healthyReplicas || 0) + 1;
+    }
+  }
+
+  // Snapshot the visible-to-presence node list: includes decoratives,
+  // excludes regions and failed. Used for `nodesByType` so presence
+  // predicates can require decorative components like kafkaReplica /
+  // kafkaController on Lesson 14 even though the sim ignores them.
+  const visibleNodes = nodes;
+
+  // Decorative components (e.g. Lesson 14's Kafka replica markers + KRaft
+  // controller) are visual annotations: part of the architectural picture
+  // but never on the request-flow path. Filter them and their edges out
+  // before the sim sees the graph.
+  const decorativeIds = new Set();
+  for (const n of nodes) {
+    const meta = componentTypes[n.data?.type];
+    if (meta?.decorative) decorativeIds.add(n.id);
+  }
+  if (decorativeIds.size > 0) {
+    nodes = nodes.filter((n) => !decorativeIds.has(n.id));
+    edges = edges.filter((e) => !decorativeIds.has(e.source) && !decorativeIds.has(e.target));
+  }
   const result = dispatch(puzzle, nodes, edges);
   if (result && result.ok) {
-    result.nodesByType = countNodesByType(nodes);
+    result.nodesByType = countNodesByType(visibleNodes);
   }
   return result;
 }
@@ -79,6 +169,13 @@ function buildAdjacency(nodes, edges) {
     inAdj.get(e.target).push(e.source);
   }
   return { outAdj, inAdj };
+}
+
+function isPubsub(cfg) {
+  // PropertyPanel only supports text/number props, so pubsub may come back
+  // as a boolean (set via solution()/initialNodes) or the strings 'true' /
+  // 'false' (set via the property panel). Treat both equivalents.
+  return cfg?.pubsub === true || cfg?.pubsub === 'true';
 }
 
 function topoSort(nodes, outAdj, inAdj) {
@@ -219,7 +316,18 @@ function simulateFlow(nodes, edges) {
 
     // Apply capacity cap proportionally across (reads + writes).
     const cap = Number(cfg.capacity);
-    const capacity = Number.isFinite(cap) && cap > 0 ? cap : Infinity;
+    let capacity = Number.isFinite(cap) && cap > 0 ? cap : Infinity;
+    // Lesson 14 Phase 1 — ISR enforcement. When a Queue has acks='all'
+    // and fewer in-sync replicas than minInsyncReplicas, writes can't
+    // be ack'd: capacity collapses to 0. The check counts the leader
+    // itself (1) plus healthy replica markers tagged with replicaOf.
+    if (meta.role === 'queue' && cfg.acks === 'all') {
+      const minISR = Number(cfg.minInsyncReplicas) || 1;
+      const healthy = node._healthyReplicas || 0;
+      if (1 + healthy < minISR) {
+        capacity = 0;
+      }
+    }
     const totalEff = effReads + effWrites;
     const accepted = Math.min(totalEff, capacity);
     const acceptRatio = totalEff > 0 ? accepted / totalEff : 0;
@@ -232,7 +340,17 @@ function simulateFlow(nodes, edges) {
     const meanLat = Number(cfg.latency) || 0;
     // Default p99 to 3× mean if the component doesn't carry one explicitly.
     // Industry rule-of-thumb; players can override per-component. See caveats.md #3.
-    const p99Lat = cfg.p99Latency != null ? Number(cfg.p99Latency) : meanLat * 3;
+    let p99Lat = cfg.p99Latency != null ? Number(cfg.p99Latency) : meanLat * 3;
+    // Lesson 14 Phase 2 — acks-driven latency. acks='all' forces the
+    // producer to wait for every in-sync replica to fetch, so the
+    // effective p99 picks up (RF-1) follower-fetch hops (~5ms each is
+    // a defensible round-number). acks=0/1 don't add anything. This is
+    // grounded in network physics, not a fudge factor: more hops = more
+    // latency, period.
+    if (meta.role === 'queue' && cfg.acks === 'all') {
+      const rf = Number(cfg.replicationFactor) || 1;
+      p99Lat += Math.max(0, rf - 1) * 5;
+    }
     s.latencyToHere = worstParentLatency + meanLat;
     s.p99LatencyToHere = worstParentP99Latency + p99Lat;
 
@@ -261,7 +379,18 @@ function simulateFlow(nodes, edges) {
       s.writeContinuing = 0;
       // Seed for async pass — the queue emits whatever it accepted.
       s.asyncContinuing = s.accepted;
-      totalBackgroundAttempted += s.accepted;
+      // For pubsub queues (Kafka topics — Lesson 14), each downstream
+      // out-edge is a separate consumer group, and each group is
+      // *expected* to receive every event independently. So the
+      // attempted count multiplies by out-degree. Default queue
+      // semantics (work-queue, RabbitMQ-style, Lesson 8) keep 1:1 —
+      // each event is delivered to exactly one consumer.
+      if (isPubsub(cfg)) {
+        const outDeg = outAdj.get(id).length || 1;
+        totalBackgroundAttempted += s.accepted * outDeg;
+      } else {
+        totalBackgroundAttempted += s.accepted;
+      }
     } else if (meta.role === 'sink') {
       s.terminated += s.accepted;
       totalReadServed += s.readAccepted;
@@ -320,10 +449,19 @@ function simulateFlow(nodes, edges) {
       for (const pid of inAdj.get(id)) {
         const ps = state.get(pid);
         if (ps.asyncContinuing <= 0) continue;
-        // Async traffic splits evenly across the parent's out-edges. Read/
-        // write kind is irrelevant on the async side.
-        const outDegree = outAdj.get(pid).length || 1;
-        asyncIn += ps.asyncContinuing / outDegree;
+        const parentNode = nodeMap.get(pid);
+        const parentMeta = componentTypes[parentNode.data.type];
+        const parentCfg = parentNode.data.config || {};
+        // pubsub queues (Lesson 14 Kafka partitions) replicate output to
+        // every downstream out-edge — each downstream is a separate
+        // consumer group seeing the full stream. Default queue semantics
+        // (Lesson 8 work-queue) split evenly across out-edges.
+        if (parentMeta.role === 'queue' && isPubsub(parentCfg)) {
+          asyncIn += ps.asyncContinuing;
+        } else {
+          const outDegree = outAdj.get(pid).length || 1;
+          asyncIn += ps.asyncContinuing / outDegree;
+        }
       }
       s.asyncIn = asyncIn;
       if (asyncIn <= 0) continue;
@@ -392,9 +530,22 @@ function simulateFlow(nodes, edges) {
   const backgroundSuccessRate =
     totalBackgroundAttempted > 0 ? totalBackgroundServed / totalBackgroundAttempted : 1;
 
+  // Distinct consumer-group tags across Worker nodes — used by Lesson 14's
+  // hasMultipleConsumerGroups predicate. Workers without a consumerGroup
+  // config aren't counted; this is a Kafka-specific notion.
+  const groups = new Set();
+  for (const n of nodes) {
+    if (n.data?.type === 'service' && n.data?.config?.role === 'worker') {
+      const g = n.data?.config?.consumerGroup;
+      if (g) groups.add(g);
+    }
+  }
+  const consumerGroupCount = groups.size;
+
   return {
     ok: true,
     kind: 'flow',
+    consumerGroupCount,
     totalAttempted,
     totalServed,
     totalDropped,

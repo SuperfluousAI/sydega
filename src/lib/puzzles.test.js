@@ -79,7 +79,7 @@ describe('puzzle contracts', () => {
 
 describe('component type contracts', () => {
   it.each(Object.entries(componentTypes))('%s has the required fields', (key, meta) => {
-    expect(['source', 'passthrough', 'cache', 'queue', 'sink']).toContain(meta.role);
+    expect(['source', 'passthrough', 'cache', 'queue', 'sink', 'decorative']).toContain(meta.role);
     expect(Array.isArray(meta.props)).toBe(true);
     expect(typeof meta.hasInput).toBe('boolean');
     expect(typeof meta.hasOutput).toBe('boolean');
@@ -1063,7 +1063,9 @@ describe('canonical solutions', () => {
       node('db', 'database'),
     ];
     const r = simulate(p, nodes, [
-      edge('producers', 'lb'),
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
       edge('lb', 'q'),
       edge('q', 'w'),
       edge('w', 'db'),
@@ -1091,11 +1093,14 @@ describe('canonical solutions', () => {
       node('w3', 'service', { role: 'worker', capacity: 20000 }),
       node('db', 'database', { capacity: 80000 }),
     ];
+    const producerToQueues = ['events-svc-a', 'events-svc-b', 'events-svc-c'].flatMap((p) => [
+      edge(p, 'q0'),
+      edge(p, 'q1'),
+      edge(p, 'q2'),
+      edge(p, 'q3'),
+    ]);
     const r = simulate(p, nodes, [
-      edge('producers', 'q0'),
-      edge('producers', 'q1'),
-      edge('producers', 'q2'),
-      edge('producers', 'q3'),
+      ...producerToQueues,
       edge('q0', 'w0'),
       edge('q1', 'w1'),
       edge('q2', 'w2'),
@@ -1127,7 +1132,9 @@ describe('canonical solutions', () => {
       node('w3', 'service', { role: 'worker', capacity: 20000 }),
     ];
     const r = simulate(p, nodes, [
-      edge('producers', 'lb'),
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
       edge('lb', 'q0'),
       edge('lb', 'q1'),
       edge('lb', 'q2'),
@@ -1165,7 +1172,9 @@ describe('canonical solutions', () => {
       node('db', 'database', { capacity: 60000 }),
     ];
     const r = simulate(p, nodes, [
-      edge('producers', 'lb'),
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
       edge('lb', 'q0'),
       edge('lb', 'q1'),
       edge('lb', 'q2'),
@@ -1192,6 +1201,259 @@ describe('canonical solutions', () => {
     expect(r.backgroundSuccessRate).toBeLessThan(0.99);
     expect(ev.results.find((rq) => rq.key === 'asyncSuccess').passed).toBe(false);
     expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): single under-sized DB sink → async drops (cluster pattern matters)', () => {
+    // Architecture is otherwise right (router + 6 partitions + consumer group),
+    // but the sink layer is a single default-capacity DB instead of an
+    // LB-fronted cluster. 60k events/sec aggregate vs default DB cap 1000 =
+    // most of the load drops at the sink. Reinforces Lesson 6's cluster pattern.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q0', 'queue'),
+      node('q1', 'queue'),
+      node('q2', 'queue'),
+      node('q3', 'queue'),
+      node('q4', 'queue'),
+      node('q5', 'queue'),
+      node('w0', 'service', { role: 'worker', capacity: 10000 }),
+      node('w1', 'service', { role: 'worker', capacity: 10000 }),
+      node('w2', 'service', { role: 'worker', capacity: 10000 }),
+      node('w3', 'service', { role: 'worker', capacity: 10000 }),
+      node('w4', 'service', { role: 'worker', capacity: 10000 }),
+      node('w5', 'service', { role: 'worker', capacity: 10000 }),
+      node('db', 'database'), // default cap 1000, way under 60k aggregate
+    ];
+    const r = simulate(p, nodes, [
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
+      edge('lb', 'q0'),
+      edge('lb', 'q1'),
+      edge('lb', 'q2'),
+      edge('lb', 'q3'),
+      edge('lb', 'q4'),
+      edge('lb', 'q5'),
+      edge('q0', 'w0'),
+      edge('q1', 'w1'),
+      edge('q2', 'w2'),
+      edge('q3', 'w3'),
+      edge('q4', 'w4'),
+      edge('q5', 'w5'),
+      edge('w0', 'db'),
+      edge('w1', 'db'),
+      edge('w2', 'db'),
+      edge('w3', 'db'),
+      edge('w4', 'db'),
+      edge('w5', 'db'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasStorage').passed).toBe(true); // predicate passes (1 DB)
+    expect(r.backgroundSuccessRate).toBeLessThan(0.99); // but math doesn't
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): single consumer group → hasMultipleConsumerGroups fails', () => {
+    // The student wires the canonical real-time pipeline but forgets the
+    // analytics group entirely. This is the Lesson 8 trap re-packaged for
+    // Kafka: one group is fine for "task queue" semantics but misses Kafka's
+    // defining feature — independent consumer groups reading the same topic.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q0', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q1', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q2', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q3', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q4', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q5', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('w0', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('w1', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('w2', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('w3', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('w4', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('w5', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('sink-lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('sink-db', 'database', {}, { capacity: 60000 }),
+      // 6 replicas + controller present so those predicates pass — failure is
+      // *only* the missing second consumer group.
+      node('rep-0', 'kafkaReplica'),
+      node('rep-1', 'kafkaReplica'),
+      node('rep-2', 'kafkaReplica'),
+      node('rep-3', 'kafkaReplica'),
+      node('rep-4', 'kafkaReplica'),
+      node('rep-5', 'kafkaReplica'),
+      node('kraft', 'kafkaController'),
+    ];
+    const r = simulate(p, nodes, [
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
+      edge('lb', 'q0'),
+      edge('lb', 'q1'),
+      edge('lb', 'q2'),
+      edge('lb', 'q3'),
+      edge('lb', 'q4'),
+      edge('lb', 'q5'),
+      edge('q0', 'w0'),
+      edge('q1', 'w1'),
+      edge('q2', 'w2'),
+      edge('q3', 'w3'),
+      edge('q4', 'w4'),
+      edge('q5', 'w5'),
+      edge('w0', 'sink-lb'),
+      edge('w1', 'sink-lb'),
+      edge('w2', 'sink-lb'),
+      edge('w3', 'sink-lb'),
+      edge('w4', 'sink-lb'),
+      edge('w5', 'sink-lb'),
+      edge('sink-lb', 'sink-db'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    expect(r.consumerGroupCount).toBe(1);
+    expect(ev.results.find((rq) => rq.key === 'hasMultipleConsumerGroups').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): no replica markers → hasReplicaTopology fails', () => {
+    // Architecture is otherwise canonical (router + partitions + 2 groups +
+    // sinks + controller) but the student didn't draw replica markers.
+    // The durability story (RF=3, leader+followers on different brokers)
+    // isn't visible to the interviewer.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q0', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q1', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q2', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q3', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q4', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('q5', 'queue', {}, { topic: 'events', pubsub: true }),
+      node('wrt-0', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wrt-1', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wrt-2', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wrt-3', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wrt-4', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wrt-5', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'realtime' }),
+      node('wan-0', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('wan-1', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('wan-2', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('wan-3', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('wan-4', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('wan-5', 'service', { role: 'worker', capacity: 10000, consumerGroup: 'analytics' }),
+      node('sink-rt', 'database', {}, { capacity: 60000 }),
+      node('sink-an', 'database', {}, { capacity: 60000 }),
+      node('kraft', 'kafkaController'),
+      // NOTE: no kafkaReplica nodes — that's the failure mode.
+    ];
+    const edges = [
+      edge('events-svc-a', 'lb'),
+      edge('events-svc-b', 'lb'),
+      edge('events-svc-c', 'lb'),
+      ...['q0', 'q1', 'q2', 'q3', 'q4', 'q5'].map((q) => edge('lb', q)),
+      edge('q0', 'wrt-0'), edge('q0', 'wan-0'),
+      edge('q1', 'wrt-1'), edge('q1', 'wan-1'),
+      edge('q2', 'wrt-2'), edge('q2', 'wan-2'),
+      edge('q3', 'wrt-3'), edge('q3', 'wan-3'),
+      edge('q4', 'wrt-4'), edge('q4', 'wan-4'),
+      edge('q5', 'wrt-5'), edge('q5', 'wan-5'),
+      ...['wrt-0', 'wrt-1', 'wrt-2', 'wrt-3', 'wrt-4', 'wrt-5'].map((w) => edge(w, 'sink-rt')),
+      ...['wan-0', 'wan-1', 'wan-2', 'wan-3', 'wan-4', 'wan-5'].map((w) => edge(w, 'sink-an')),
+    ];
+    const r = simulate(p, nodes, edges);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasReplicaTopology').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): killing 2 replicas of a partition → ISR insufficient, writes drop (Phase 1)', () => {
+    // acks=all + minInsyncReplicas=2 means: 1 leader + 2 followers must be
+    // alive. Fail both followers of partition-0 → 1 + 0 < 2 → partition-0
+    // rejects writes. The other 5 partitions continue accepting.
+    // 1/6 of producer load drops at the queue tier.
+    const p = puzzles.streamProcessingAtScale;
+    const { nodes: solNodes, edges } = p.solution();
+    // Mark the two replicas of partition-0 as failed.
+    const nodes = solNodes.map((n) => {
+      if (n.id === 'rep-P0-B1' || n.id === 'rep-P0-B2') {
+        return { ...n, data: { ...n.data, failed: true } };
+      }
+      return n;
+    });
+    const r = simulate(p, nodes, edges);
+    // partition-0 receives 10k events/sec but rejects them all (capacity → 0).
+    // Total writes: 60k. Dropped: 10k. successRate ≈ 5/6 ≈ 0.833.
+    expect(r.successRate).toBeLessThan(0.99);
+    expect(r.successRate).toBeGreaterThan(0.8);
+    expect(r.totalDropped).toBeGreaterThan(0);
+  });
+
+  it('Stream Processing (Kafka): acks=all raises p99 vs acks=1 (Phase 2)', () => {
+    // Same chain, two configurations. acks=all adds (RF-1)*5ms = 10ms of
+    // replication-fetch latency per partition; acks=1 doesn't. The avgP99
+    // metric reflects the difference end-to-end.
+    const p = puzzles.streamProcessingAtScale;
+    const baseNodes = [
+      node('src', 'client', {}, { rps: 1000, readRatio: 0 }),
+      node('q', 'queue', {}, { topic: 'events', pubsub: true, replicationFactor: 3, minInsyncReplicas: 1 }),
+      node('w', 'service', { role: 'worker', capacity: 5000, consumerGroup: 'rt' }),
+      node('db', 'database', {}, { capacity: 5000 }),
+    ];
+    const wires = [edge('src', 'q'), edge('q', 'w'), edge('w', 'db')];
+
+    const ackAllNodes = baseNodes.map((n) =>
+      n.id === 'q' ? { ...n, data: { ...n.data, config: { ...n.data.config, acks: 'all' } } } : n
+    );
+    const ack1Nodes = baseNodes.map((n) =>
+      n.id === 'q' ? { ...n, data: { ...n.data, config: { ...n.data.config, acks: '1' } } } : n
+    );
+
+    const rAll = simulate(p, ackAllNodes, wires);
+    const r1 = simulate(p, ack1Nodes, wires);
+    expect(rAll.successRate).toBe(1);
+    expect(r1.successRate).toBe(1);
+    // acks=all p99 should be at least 10ms higher (2 follower fetch hops).
+    expect(rAll.avgP99Latency).toBeGreaterThan(r1.avgP99Latency + 9);
+  });
+
+  it('Stream Processing (Kafka): killing leader Queue → healthy replica is promoted (Phase 3)', () => {
+    // Mark partition-0 (the leader Queue) as failed. The sim should find
+    // rep-P0-B1 (a healthy replica with replicaOf=partition-0) and promote
+    // it: rewrite its type to queue, rebind incoming + outgoing edges.
+    // Result: traffic continues flowing through the promoted leader; sync
+    // success stays at 100%.
+    const p = puzzles.streamProcessingAtScale;
+    const { nodes: solNodes, edges } = p.solution();
+    const nodes = solNodes.map((n) =>
+      n.id === 'partition-0' ? { ...n, data: { ...n.data, failed: true } } : n
+    );
+    const r = simulate(p, nodes, edges);
+    expect(r.ok).toBe(true);
+    // Without promotion, partition-0's 10k load would be stranded at the
+    // router → 1/6 of the writes drop. With promotion, the replica takes
+    // over and all 60k make it through.
+    expect(r.successRate).toBe(1);
+  });
+
+  it('Stream Processing (Kafka): replica markers are decorative — sim ignores them', () => {
+    // Even if a student incorrectly wires producers → a kafkaReplica node,
+    // the sim filters decoratives out so the canvas doesn't pretend the
+    // replica accepts events. Validates the decorative primitive contract.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      node('src', 'client', {}, { rps: 1000, readRatio: 0 }),
+      node('rep', 'kafkaReplica'),
+      node('db', 'database', {}, { capacity: 10000 }),
+    ];
+    const r = simulate(p, nodes, [edge('src', 'rep'), edge('rep', 'db')]);
+    // Decorative filter strips the replica + both edges. The Client has no
+    // downstream → stranded writes drop. successRate falls to 0.
+    expect(r.ok).toBe(true);
+    expect(r.successRate).toBeLessThan(0.5);
   });
 
   it('Twitter at Scale: no CDN → reads melt the App pool even at high App capacity', () => {

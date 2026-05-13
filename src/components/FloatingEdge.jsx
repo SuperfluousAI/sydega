@@ -64,12 +64,21 @@ export default function FloatingEdge({
   if (!sourceNode || !targetNode) return null;
 
   const arrows = arrowsOf(data);
+  // Replication edges (Lesson 14 — leader → replica markers): dashed,
+  // muted, non-flowing. They convey a metadata relationship, not request
+  // flow, so we strip the animation class and overlay a dashed stroke
+  // plus reduced opacity. The sim already filters them out (decorative
+  // target).
+  const isReplicationEdge = data?.kind === 'replication';
+  const effectiveStyle = isReplicationEdge
+    ? { ...style, stroke: '#7dd3fc', strokeDasharray: '6 6', opacity: 0.55 }
+    : style;
   // Custom SVG marker with orient="auto-start-reverse" so the SAME marker
   // flips 180° when used as marker-start. React Flow's built-in MarkerType
   // uses orient="auto", which makes markerStart arrows point the same
   // direction as markerEnd ones — that's the visual asymmetry bug. Each
   // edge gets its own marker so per-edge color (R/W kind) is honored.
-  const markerColor = style?.stroke || '#cbd5e1';
+  const markerColor = effectiveStyle?.stroke || '#cbd5e1';
   const markerId = `sdg-arrow-${id}`;
   const markerUrl = `url(#${markerId})`;
   const { source: src, target: tgt } = getFloatingEdgeEndpoints(sourceNode, targetNode);
@@ -103,13 +112,15 @@ export default function FloatingEdge({
   const both = arrows.source && arrows.target;
   const forwardOnly = !arrows.source && arrows.target;
   const reverseOnly = arrows.source && !arrows.target;
-  const flowClass = both
-    ? 'edge-flow-forward'
-    : forwardOnly
+  const flowClass = isReplicationEdge
+    ? 'edge-flow-static'
+    : both
       ? 'edge-flow-forward'
-      : reverseOnly
-        ? 'edge-flow-reverse'
-        : 'edge-flow-static';
+      : forwardOnly
+        ? 'edge-flow-forward'
+        : reverseOnly
+          ? 'edge-flow-reverse'
+          : 'edge-flow-static';
 
   return (
     <>
@@ -149,19 +160,19 @@ export default function FloatingEdge({
         id={id}
         className={`react-flow__edge-path ${flowClass}`}
         d={path}
-        markerStart={arrows.source ? markerUrl : undefined}
-        markerEnd={arrows.target ? markerUrl : undefined}
-        style={style}
+        markerStart={arrows.source && !isReplicationEdge ? markerUrl : undefined}
+        markerEnd={arrows.target && !isReplicationEdge ? markerUrl : undefined}
+        style={effectiveStyle}
       />
 
       {/* For "both" arrows, overlay a second path animating in the reverse
           direction so the player sees motion both ways. The marker is on the
           primary path; this one is just for the dash motion. */}
-      {both && (
+      {both && !isReplicationEdge && (
         <path
           d={path}
           className="react-flow__edge-path edge-flow-reverse"
-          style={{ ...style, opacity: 0.55 }}
+          style={{ ...effectiveStyle, opacity: 0.55 }}
         />
       )}
 

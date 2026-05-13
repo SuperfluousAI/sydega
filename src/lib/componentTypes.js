@@ -242,7 +242,13 @@ export const componentTypes = {
         // Workers process async jobs from a Queue. Slower per-job than
         // sync request handlers (background work tends to be heavier),
         // lower throughput per instance, longer p99 tail.
-        defaults: { capacity: 50, latency: 100, p99Latency: 300 },
+        // `consumerGroup` is Kafka-specific (Lesson 14): tag this worker
+        // with a group name so the sim can count distinct consumer
+        // groups across the canvas.
+        defaults: { capacity: 50, latency: 100, p99Latency: 300, consumerGroup: '' },
+        props: [
+          { key: 'consumerGroup', label: 'Consumer group (Kafka — Lesson 14)', type: 'text' },
+        ],
       },
     },
   },
@@ -265,11 +271,34 @@ export const componentTypes = {
     role: 'queue',
     hasInput: true,
     hasOutput: true,
-    defaults: { topic: 'events', replicationFactor: 3, acks: 'all' },
+    // `pubsub: true` switches the queue's async fanout from work-queue
+    // semantics (split events across out-edges; Lesson 8, RabbitMQ-style)
+    // to pub/sub semantics (replicate every event to every out-edge;
+    // Lesson 14, Kafka partition + multiple consumer groups). Default
+    // false to preserve Lesson 8's behavior.
+    //
+    // `minInsyncReplicas` (Lesson 14) — when acks=all, writes require this
+    // many in-sync replicas (counting the leader itself). The sim counts
+    // (1 if leader healthy) + (healthy kafkaReplica nodes where
+    // replicaOf === this Queue's id). If below threshold, writes drop.
+    // Default 2 matches the canonical RF=3 production setting.
+    defaults: {
+      topic: 'events',
+      replicationFactor: 3,
+      acks: 'all',
+      pubsub: false,
+      // Default 1 → effectively disabled (leader alone always satisfies).
+      // Kafka-style lessons (Lesson 14) explicitly set 2 on their Queues
+      // to engage the ISR enforcement path; older lessons (Lesson 8,
+      // asyncNotifications) leave the default and aren't affected.
+      minInsyncReplicas: 1,
+    },
     props: [
       { key: 'topic', label: 'Topic / Queue name', type: 'text' },
       { key: 'replicationFactor', label: 'Replication factor (teaching aid)', type: 'number', min: 1, step: 1 },
-      { key: 'acks', label: 'Producer acks: 0 | 1 | all (teaching aid)', type: 'text' },
+      { key: 'acks', label: 'Producer acks: 0 | 1 | all', type: 'text' },
+      { key: 'minInsyncReplicas', label: 'min.insync.replicas (acks=all enforces this)', type: 'number', min: 1, step: 1 },
+      { key: 'pubsub', label: 'Pub/sub (true = Kafka topic; false = work queue)', type: 'text' },
     ],
   },
   // Unified cache type — `internal` (Redis/Memcached-style query/data cache,
@@ -384,6 +413,43 @@ export const componentTypes = {
       { key: 'p99Latency', label: 'p99 added latency (ms)', type: 'number', min: 0, step: 1 },
     ],
   },
+
+  // ─── Lesson 14 decorative components (Kafka replica + controller) ───────
+  // `decorative: true` means the simulator skips these nodes and any edges
+  // touching them. They exist purely so the canvas can depict architectural
+  // elements that don't carry request flow but are part of the answer a
+  // candidate would draw on a whiteboard. The simulator filters them out
+  // upfront (see simulator.js).
+  kafkaReplica: {
+    label: 'Replica',
+    color: '#a5f3fc',
+    role: 'decorative',
+    decorative: true,
+    hasInput: false,
+    hasOutput: false,
+    // `replicaOf` points to the leader Queue's id this replica backs up.
+    // The sim uses it for two things: (1) min.insync.replicas enforcement
+    // — count healthy replicas pointing at a leader; (2) failure-driven
+    // leader promotion — when the named leader is failed, the sim
+    // promotes the first healthy replica with this replicaOf to take over.
+    defaults: { partition: '0', broker: '0', isLeader: 'no', replicaOf: '' },
+    props: [
+      { key: 'partition', label: 'Partition ID', type: 'text' },
+      { key: 'broker', label: 'Broker ID', type: 'text' },
+      { key: 'isLeader', label: 'Leader? (yes / no)', type: 'text' },
+      { key: 'replicaOf', label: 'Backs up which leader Queue (id)', type: 'text' },
+    ],
+  },
+  kafkaController: {
+    label: 'KRaft Controllers',
+    color: '#94a3b8',
+    role: 'decorative',
+    decorative: true,
+    hasInput: false,
+    hasOutput: false,
+    defaults: {},
+    props: [],
+  },
 };
 
 export function defaultsFor(typeKey, role) {
@@ -417,7 +483,14 @@ export function metaFor(node) {
   if (!meta) return null;
   const role = node?.data?.config?.role;
   if (meta.roles && role && meta.roles[role]) {
-    return { ...meta, ...meta.roles[role], role };
+    const merged = { ...meta, ...meta.roles[role], role };
+    // Role-specific props extend the base type's props (don't replace).
+    // Used by Lesson 14: only the Worker role gets the `consumerGroup`
+    // field; AppServers don't see it.
+    if (meta.roles[role].props) {
+      merged.props = [...(meta.props || []), ...meta.roles[role].props];
+    }
+    return merged;
   }
   return meta;
 }

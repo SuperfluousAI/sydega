@@ -234,6 +234,56 @@ Three scenarios:
 
 ---
 
+## 9. Lesson 14 Kafka mechanics — pragmatic shortcuts in the durability model
+
+### The Decision
+
+Decided 2026-05-12 / 13. Lesson 14 ("Stream Processing at Scale — Design Kafka") implements interactive durability semantics via four extensions to the existing simulator + componentType primitives:
+
+1. **`decorative: true` flag on componentTypes** (`kafkaReplica`, `kafkaController`). Sim filters these nodes + their edges out of the flow graph but counts them in `nodesByType` so presence predicates work.
+2. **`pubsub: true` flag on Queue.** Replaces work-queue fanout (divide output) with pub/sub fanout (replicate output to every out-edge). Lesson 8 leaves it false; Lesson 14 sets it true.
+3. **`replicaOf` config on kafkaReplica.** Points to the leader Queue's id. The sim uses it for ISR enforcement (count healthy replicas) and failure-driven leader promotion (rewrite the type of the first healthy matching replica to `queue`, rebind edges).
+4. **`minInsyncReplicas` config + `acks` config on Queue.** When `acks='all'`, sim enforces `1 + healthyReplicas >= minInsyncReplicas` for the leader to accept writes; otherwise capacity drops to 0. Additionally, `acks='all'` adds `(RF-1) × 5ms` of replication-fetch latency to the Queue's p99.
+
+### Why We Chose This
+
+The earlier draft of the lesson tagged ISR / leader election / acks as "deep-dive only — sim can't model time-axis behavior." Operator pushed back: those aren't actually time-axis events, they're steady-state failure scenarios. See [[feedback-extend-primitives]] for the framing rule the operator surfaced.
+
+Three of the four extensions are grounded in non-fudge-factor reasoning:
+- Decorative nodes: pure visual layer, no sim semantics. Honest.
+- pubsub fanout: replaces one rate-distribution rule with another. Honest.
+- ISR enforcement: count of healthy replicas is concretely observable in any steady-state. Honest.
+- acks-driven latency: `(RF-1) × 5ms` per follower-fetch hop is grounded in network physics (extra hops = extra wait). The `5ms` is a chosen constant, defensible but not derived from first principles. Mildly fudge-factory but tightly bounded.
+
+We did NOT model sequential I/O, OS page cache, zero-copy, or compression-codec throughput multipliers. Those would require fudge factors we couldn't justify (e.g. "lz4 vs snappy: 0% to 30% depending on workload"). HelloInterview and Confluent both treat these as deep-dive talk track rather than whiteboard items.
+
+### When This Will Bite
+
+Six scenarios:
+
+1. **Multiple workers per consumer group with `pubsub: true`** — a player who drops 2 workers in the same group, both wired from the same Queue, will see each worker get the *full* rate from that Queue. In real Kafka, the group coordinator would assign partitions to one consumer per partition; 2 consumers on 1 partition means one stays idle. Our sim has no group coordinator, so it duplicates rather than partitioning the work within the group.
+2. **A future puzzle wants partial pub/sub semantics** — say, "tee" an event stream to 1 work-queue consumer + 1 fan-out consumer group. Our `pubsub` flag is per-Queue, all-or-nothing. Would need per-edge flag or new primitive.
+3. **Dynamic ISR membership** — followers falling out under load, rejoining when caught up. Our model is binary (healthy or failed). Would need per-replica health state that evolves over simulation time, not just at the sim entry boundary.
+4. **`unclean.leader.election.enable=true`** — promote any replica, including non-ISR. Our promotion is "first healthy replica with matching `replicaOf`"; we don't distinguish "in-ISR" from "out-of-ISR". A 2-line addition if needed.
+5. **Replication traffic on the leader** — real Kafka replicas pull from the leader, adding bandwidth load. We don't model this. A heavily-replicated topic would have lower effective producer throughput on the leader; we don't capture that.
+6. **Replication edges getting cycled by a player click** — the `handleEdgeClick` in `Canvas.jsx` cycles edge `kind` through read/write/both. If a player clicks a replication edge, it'd flip to a flow edge and lose the dashed style. Cosmetic, but inconsistent.
+
+### What We Do When That Scenario Arrives
+
+**For 1 (workers within a group):** introduce a `consumerGroup` field on the edge from Queue → Worker, or use the existing `consumerGroup` field on Worker plus a group-coordinator pass in the sim. A correct model would: for each Queue with `pubsub:true`, partition its out-degree by consumer group, *then* divide within each group.
+
+**For 2 (per-edge fanout semantics):** generalize the flag from `Queue.pubsub` to `edge.fanout` (broadcast | partition). More expressive at the cost of edge-level complexity.
+
+**For 3 (dynamic ISR):** would require a step-driven simulator with time progression. Out of scope for the current rate-based sim. Probably a separate lesson primitive entirely if we ever want it.
+
+**For 4 (unclean leader election):** add `uncleanLeaderElection: true` to Queue config; promotion logic checks it before requiring matching `replicaOf`. ~5 LOC.
+
+**For 5 (replication traffic):** model leader → replica as real flow edges (not decorative); each replica has capacity. Pulls a percentage of leader throughput. Significant primitive change — replicas become semi-decorative.
+
+**For 6 (edge-kind click cycle):** add a guard in `handleEdgeClick` to skip cycling when `kind === 'replication'`. ~5 LOC.
+
+---
+
 ## Adding new caveats
 
 When we cut a corner that future-us will regret if we forget about, add it here with:

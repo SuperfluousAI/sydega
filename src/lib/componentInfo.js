@@ -218,6 +218,29 @@ export const componentInfo = {
     connects: 'Wires from App Servers via Read edges. Writes that route here will be rejected by the simulator.',
     realWorld: 'PostgreSQL streaming replication, MySQL replicas, etc.',
   },
+  kafkaReplica: {
+    description:
+      'Decorative marker for a Kafka partition replica. Each partition has RF copies (1 leader + RF-1 followers) ' +
+      'distributed across brokers. Pure visual — the simulator ignores this node.',
+    usage:
+      'Drop alongside a partition Queue to depict where its replicas live. Label each with its broker ID and ' +
+      'whether it\'s the leader. Doesn\'t carry flow.',
+    connects: 'No wires required — it\'s a label, not a path. Sim ignores any edges touching it.',
+    realWorld:
+      'In real Kafka, a partition\'s leader handles reads/writes; followers pull from the leader and join the ISR ' +
+      'once caught up. We don\'t model the replica state machine (it\'s time-axis); this marker just makes the ' +
+      'topology visible to the reviewer.',
+  },
+  kafkaController: {
+    description:
+      'Decorative marker for the Kafka cluster controller (KRaft in modern Kafka; Zookeeper in older deployments). ' +
+      'Coordinates broker membership, leader election, ISR tracking. Pure visual.',
+    usage: 'Drop one per cluster to show the control plane exists. Doesn\'t carry data-plane flow.',
+    connects: 'Conceptually wires to brokers via a control channel; we don\'t model it. Sim ignores edges.',
+    realWorld:
+      'KRaft replaces Zookeeper as of Kafka 3.x — the controller is a Raft-replicated state machine that owns ' +
+      'cluster metadata. Production clusters typically run 3 or 5 controllers for fault tolerance.',
+  },
 };
 
 // Resolve a node to its info entry. For role-aware types (service), key by

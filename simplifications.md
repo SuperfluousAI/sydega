@@ -92,43 +92,52 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 
 ## 7. Replication factor / ISR / leader election (Lesson 14 — Kafka)
 
-**Where it shows up**: Lesson 14's Queue property panel surfaces `replicationFactor` (default 3) as a *teaching aid* — the value doesn't change the sim. We render each partition as a single Queue node and don't model leader vs. follower replicas.
+**Where it shows up**: Lesson 14 models the *static* parts of the durability story: kafkaReplica decorative markers carry `replicaOf` pointing to their leader Queue; each leader Queue has 2 dashed light-blue edges fanning out to its 2 follower replicas (visual signal, no flow); the Queue's `minInsyncReplicas` (default 2 in the canonical) gates write acceptance when `acks='all'`. Mark replica markers as failed and the corresponding Queue's writes drop. Mark a leader Queue as failed and the sim *promotes* a healthy replica to take over — its edges get rebound and traffic continues.
 
-**What we say**: A partition has a replication factor. RF=3 is the industry default.
+**What we say**: RF=3, acks=all, min.insync.replicas=2. ISR membership is the count of healthy replicas backing each leader; leader promotion is automatic when a leader fails.
 
-**What's actually going on in production**: Each Kafka partition has one leader and `RF-1` followers. The **In-Sync Replica set (ISR)** is the subset of replicas that are caught up to the leader's log. Writes are acknowledged once they reach all ISR members (with `acks=all`). If the leader dies, the controller elects a new leader from the ISR. `unclean.leader.election.enable=false` (the safe default) means: refuse to elect a non-ISR replica even at the cost of unavailability — durability over availability. There's also a **high watermark** — the offset up to which all ISR members have replicated, and the boundary up to which consumers can read.
+**What's actually going on in production**: Each partition has one leader + RF-1 followers, and the **In-Sync Replica set (ISR)** is dynamically maintained — followers fall out of ISR if they lag past `replica.lag.time.max.ms`, then rejoin once caught up via pull-based replication. The leader maintains a **high watermark**: the offset all ISR members have replicated, and the boundary up to which consumers can read. `unclean.leader.election.enable=false` (default) refuses to elect a non-ISR replica even at availability cost.
 
-**Why we abstract**: Modeling replica state machines requires a per-event sim, not a steady-state rate sim. Leader election and ISR shrinkage are time-axis phenomena (events, failures, recoveries) — the wrong shape for our simulator.
+**What we model vs. don't model**:
+- ✓ ISR membership count + `min.insync.replicas` threshold (Phase 1)
+- ✓ Failure-driven leader promotion to a healthy replica (Phase 3)
+- ✗ Dynamic ISR shrinkage (followers falling behind, rejoining) — requires time-axis sim
+- ✗ Pull-based replication protocol mechanics + high watermark — implementation detail
+- ✗ `unclean.leader.election.enable` toggle — would be straightforward to add as a flag if needed
 
-**What a student should know**: In an interview, say RF=3 and acks=all (or "RF=3 with min.insync.replicas=2" for the nuanced answer). Know the durability-availability tradeoff: `unclean.leader.election=false` favors durability; `=true` favors availability. The ISR shrinks under slow replicas (controlled by `replica.lag.time.max.ms`); too-aggressive lag thresholds can flap the ISR and reduce effective durability.
+**What a student should know**: In an interview, the canonical answer is `RF=3, acks=all, min.insync.replicas=2` — and now in our sim, killing 2 of a partition's replicas demonstrates the consequence (writes block). Know the durability-availability tradeoff: `unclean.leader.election=false` favors durability; `=true` favors availability. Real ISR membership is dynamic (replica.lag.time.max.ms); we simplify to "healthy or not."
 
 ---
 
 ## 8. Acks setting (0 / 1 / all) (Lesson 14 — Kafka)
 
-**Where it shows up**: Lesson 14's Queue property panel surfaces `acks` (default `all`) as a teaching aid. The value doesn't affect sim throughput or latency.
+**Where it shows up**: Lesson 14's Queue property panel surfaces `acks`. `acks='all'` engages two sim behaviors: (1) **latency cost** — the Queue's effective p99 adds `(RF-1) × 5ms` of follower-fetch hops (grounded in network physics — extra hops = extra wait); (2) **min.insync.replicas enforcement** — writes block when healthy replicas fall below threshold. `acks=0` and `acks=1` skip both.
 
-**What we say**: Producers can ack on 0, 1, or all replicas. Default is `all`.
+**What we say**: Producers can ack on 0, 1, or all replicas. The canonical (RF=3, acks=all, min.insync.replicas=2) is what you'd argue for in an interview — durable + most-of-the-time available.
 
-**What's actually going on in production**: `acks=0` means fire-and-forget — the lowest latency but the producer never knows if the message was lost (network failure, broker crash). `acks=1` means the leader ack'd — durable through one broker, but if the leader dies before replication, the message is lost. `acks=all` means every ISR member ack'd — the strongest single-cluster durability guarantee, paired with `min.insync.replicas` to define "how many is enough." Throughput cost: `all` is 2-3× slower than `1` in many benchmarks. Most production systems run `acks=all` with `min.insync.replicas=2` (out of RF=3) so writes still succeed during a single replica outage.
+**What's actually going on in production**: `acks=0` means fire-and-forget — lowest latency, no failure notification. `acks=1` means leader ack'd — durable through one broker, lost if leader crashes pre-replication. `acks=all` means every ISR member ack'd — strongest single-cluster durability, paired with `min.insync.replicas`. Throughput cost: `all` is 2-3× slower than `1` in many benchmarks. Most production systems run `acks=all` with `min.insync.replicas=2` (of RF=3) so writes survive single-replica outage.
 
-**Why we abstract**: The sim has no notion of producer-side ack latency. Modeling acks meaningfully would require a per-message broker simulator with replica failure injection.
+**What we model vs. don't model**:
+- ✓ Latency penalty for acks=all (RF-1 follower fetch hops, ~5ms each)
+- ✓ min.insync.replicas threshold enforcement under acks=all
+- ✗ Throughput penalty per se (we model latency, not throughput cap reduction)
+- ✗ Idempotent producer mode (PID + sequence numbers) — separate config layer
 
-**What a student should know**: `acks=all` + `min.insync.replicas=2` + `RF=3` is the canonical "durable Kafka" config. Know that `acks=1` is what dropped messages in famous outages (LinkedIn's 2014 hash incident; multiple Twitter / Uber post-mortems). `acks=0` exists for logs / metrics where loss tolerance is high.
+**What a student should know**: `acks=all` + `min.insync.replicas=2` + `RF=3` is the canonical "durable Kafka" config. Know that `acks=1` is what dropped messages in famous outages (LinkedIn 2014; multiple Uber post-mortems). `acks=0` exists for logs/metrics where loss tolerance is high. Flip the acks setting in the property panel and watch p99 latency move — that's the same tradeoff you'd argue about at the whiteboard.
 
 ---
 
-## 9. Single consumer group per topic (Lesson 14 — Kafka)
+## 9. Multi-consumer-group modeling — sim is simplified pub/sub (Lesson 14 — Kafka)
 
-**Where it shows up**: Lesson 14 models one consumer group: each Queue (partition) feeds exactly one downstream Worker (consumer). The sim divides the queue's output across downstream edges — it doesn't duplicate it.
+**Where it shows up**: Lesson 14's canvas models two consumer groups (real-time + analytics) reading the same partitioned topic. Each partition Queue is flagged `pubsub: true`, switching the simulator from RabbitMQ-style work-queue semantics (Lesson 8 default — output divided across downstream edges) to Kafka-style pub/sub semantics (every downstream out-edge sees the full event stream).
 
-**What we say**: 6 partitions, 6 consumers, one consumer per partition.
+**What we say**: Two consumer groups read the same 6 partitions independently; each sees 60k events/sec aggregate; offsets are tracked per group.
 
-**What's actually going on in production**: A Kafka topic can be read by **multiple consumer groups in parallel**, each tracking its own offset. This is *the* defining Kafka-vs-RabbitMQ feature: a write goes to one topic, and analytics + billing + fraud-detection + audit pipelines can all read it independently, each at their own pace. RabbitMQ would force you to either duplicate the message into N queues at publish-time or use a more complex exchange topology. Kafka treats consumption as a read against a persisted log.
+**What's actually going on in production**: Real Kafka deployments routinely have 5-15 consumer groups per topic, each at its own consumption rate, each with its own offset state in the internal `__consumer_offsets` topic. The defining Kafka-vs-RabbitMQ property: same data, many independent downstream pipelines (real-time alerts + batch ETL + fraud detection + audit logging) without coordinating between them. Lag is measured per (group, partition). Rebalancing (consumer join/leave) happens within a group; it doesn't touch other groups.
 
-**Why we abstract**: Our sim's edge-flow math divides outgoing rate across edges (load balancing semantics) rather than duplicating it (pub/sub semantics). Two consumer groups would require a different edge type ("broadcast" vs. "share") and a corresponding semantics shift in the simulator.
+**Why we abstract**: Our sim supports the pub/sub pattern via the `pubsub: true` flag on Queue, but it's binary — every out-edge is treated as a separate consumer group. The simulator doesn't model offset state, lag, or rebalancing protocols (cooperative vs eager). It also assumes 1 worker per partition per group (the canonical mapping); real deployments allow N workers in a group where N ≤ partition count, with partition assignment handled by the group coordinator.
 
-**What a student should know**: When asked "how would you add a new downstream system?" the answer is *add a new consumer group*, not *modify the producer*. Each consumer group commits its own offsets back to Kafka (in `__consumer_offsets`); they're independent. This decoupling is why Kafka becomes the central log/spine of event-driven architectures.
+**What a student should know**: When asked "how would you add a new downstream system?" the answer is *add a new consumer group with its own offset state* — not modify the producer, not duplicate the topic. Each group's lag is monitored independently. The lesson canvas shows the topology; in a real interview, mention `group.id`, `__consumer_offsets`, and the rebalancing protocol as the next layer of detail.
 
 ---
 
