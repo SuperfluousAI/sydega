@@ -354,9 +354,164 @@ export const puzzles = {
     }),
   },
 
+  persistWithDatabase: {
+    id: 'persistWithDatabase',
+    order: 6,
+    title: 'Persist with a Database',
+    blurb:
+      'Your App Server handles requests but every restart wipes the data. Add a Database so writes survive. The shape is the simplest stateful pattern: Client → App Server → Database. Reads + writes both pass through the App Server and land in the DB.',
+    kind: 'flow',
+    allowedComponents: ['client', { type: 'service', role: 'appServer' }, 'database'],
+    initialNodes: () => [
+      node('users', 'client', { x: 60, y: 240 }, { rps: 500, readRatio: 0.6 }),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'Every request must reach the App Server AND land in the Database. If success drops, capacity is the suspect — App Server default ' +
+          'cap is 500, Database default cap is 1000. Wire correctly: Client → App Server → Database.',
+      },
+      {
+        key: 'hasDatabase',
+        label: 'Has a Database (persistence)',
+        predicate: { kind: 'presence', type: 'database', min: 1 },
+        lesson:
+          'Without a Database, the app holds state in memory and loses everything on restart. The simplest fix: drop a Database and wire it ' +
+          'downstream of the App Server. Real apps may add caches, replicas, queues — but the bedrock is durable storage somewhere.',
+      },
+    ],
+    solution: () => ({
+      // 500 req/s through one App Server (cap 500) into one Database (cap 1000).
+      // The math just barely fits — pedagogy: a single machine pattern works
+      // for small loads but you'll feel the squeeze once traffic grows.
+      nodes: [
+        node('users', 'client', { x: 60, y: 240 }, { rps: 500, readRatio: 0.6 }),
+        node('app-1', 'service', { x: 320, y: 240 }, { role: 'appServer', capacity: 500 }),
+        node('db-1', 'database', { x: 580, y: 240 }),
+      ],
+      edges: [edge('users', 'app-1'), edge('app-1', 'db-1')],
+    }),
+  },
+
+  addACache: {
+    id: 'addACache',
+    order: 7,
+    title: 'Add a Cache',
+    blurb:
+      'Reads are hammering the Database. Stick an in-memory Cache between the App Server and the DB. With a high hit rate, most reads never reach disk — the DB sees only the misses. Internal caches (Redis, Memcached) are the bread-and-butter speed-up for any read-heavy workload.',
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      { type: 'service', role: 'appServer' },
+      { type: 'cache', role: 'internal' },
+      'database',
+    ],
+    initialNodes: () => [
+      node('users', 'client', { x: 60, y: 240 }, { rps: 2000, readRatio: 1 }),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          '2000 reads/sec at the App Server. If the Database\'s default cap of 1000 is the bottleneck, the only way to relieve it without ' +
+          'scaling DB hardware is a Cache that absorbs the bulk of the reads. Default internal Cache hit rate is 0.8 — 1600 hit, 400 miss.',
+      },
+      {
+        key: 'hasCache',
+        label: 'Has an internal Cache',
+        predicate: { kind: 'presence', type: 'cache', role: 'internal', min: 1 },
+        lesson:
+          'The mechanic is: Cache absorbs `hitRate` fraction of reads; misses fall through to the next component. Wire the Cache between ' +
+          'App Server and Database. With 80% hit rate on 2000 reads, only 400 reach the DB — well under its 1000 capacity.',
+      },
+    ],
+    solution: () => ({
+      // 2000 reads/sec; cache hit 0.8 absorbs 1600 → DB sees 400 (vs cap 1000).
+      // Pedagogy: the cache is what makes the math work; remove it and DB
+      // overloads. Hit rate is the load-bearing knob.
+      nodes: [
+        node('users', 'client', { x: 60, y: 240 }, { rps: 2000, readRatio: 1 }),
+        node('app-1', 'service', { x: 280, y: 240 }, { role: 'appServer', capacity: 2000 }),
+        node('cache-1', 'cache', { x: 520, y: 240 }, { role: 'internal' }),
+        node('db-1', 'database', { x: 760, y: 240 }),
+      ],
+      edges: [
+        edge('users', 'app-1'),
+        edge('app-1', 'cache-1'),
+        edge('cache-1', 'db-1'),
+      ],
+    }),
+  },
+
+  readWriteSplit: {
+    id: 'readWriteSplit',
+    order: 8,
+    title: 'Read / Write Split',
+    blurb:
+      'Caching writes is a trap — the cache fills with values that contradict the source of truth. Real systems split read paths from write paths: reads go through the Cache (and only miss to the DB); writes bypass the Cache entirely and land on the DB directly. Click an edge to cycle its label (R / W / both) — wire reads through the cache, writes straight to the DB.',
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      { type: 'service', role: 'appServer' },
+      { type: 'cache', role: 'internal' },
+      'database',
+    ],
+    initialNodes: () => [
+      node('users', 'client', { x: 60, y: 240 }, { rps: 1200, readRatio: 0.83 }),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          '1000 reads/sec + 200 writes/sec. Reads route through the Cache (80% absorbed → 200 reach DB). Writes route directly to the DB ' +
+          '(200/sec). DB sees 200 reads + 200 writes = 400 total; well under cap 1000.',
+      },
+      {
+        key: 'hasCache',
+        label: 'Has an internal Cache',
+        predicate: { kind: 'presence', type: 'cache', role: 'internal', min: 1 },
+        lesson:
+          'The Cache is what makes the read math work. Drop one between App Server and Database. Then label the edges: ' +
+          'App Server → Cache is a Read edge (R); App Server → Database is a Write edge (W).',
+      },
+      {
+        key: 'hasDatabase',
+        label: 'Has a Database',
+        predicate: { kind: 'presence', type: 'database', min: 1 },
+        lesson: 'Persistence layer is still required — writes need somewhere durable to land.',
+      },
+    ],
+    solution: () => ({
+      // 1200 req/s mix (83% read = 1000 reads, 200 writes).
+      // Read path:  Client → App → Cache (R) → DB (R).  Cache absorbs 800,
+      //             DB receives 200 reads.
+      // Write path: Client → App → DB (W) direct.  200 writes.
+      // DB total: 200 reads + 200 writes = 400 (vs cap 1000).
+      nodes: [
+        node('users', 'client', { x: 60, y: 240 }, { rps: 1200, readRatio: 0.83 }),
+        node('app-1', 'service', { x: 280, y: 240 }, { role: 'appServer', capacity: 1500 }),
+        node('cache-1', 'cache', { x: 520, y: 160 }, { role: 'internal' }),
+        node('db-1', 'database', { x: 760, y: 240 }),
+      ],
+      edges: [
+        edge('users', 'app-1'),
+        edge('app-1', 'cache-1', 'read'),
+        edge('cache-1', 'db-1', 'read'),
+        edge('app-1', 'db-1', 'write'),
+      ],
+    }),
+  },
+
   urlShortener: {
     id: 'urlShortener',
-    order: 6,
+    order: 9,
     title: 'URL Shortener',
     blurb:
       'Build a system that serves a high read-to-write URL shortener at the target load. Reads dominate; cold reads hit the database. Hint: a cache and/or more app servers will be needed as load grows.',
@@ -419,7 +574,7 @@ export const puzzles = {
 
   clusterDatabase: {
     id: 'clusterDatabase',
-    order: 7,
+    order: 10,
     title: 'Add a Database Load Balancer',
     blurb:
       'A flood of writes (3000 req/s, all writes) is hammering your one Database. A Cache won\'t help — caches only absorb reads. The DB itself caps at 1000 req/s. You need more Databases, plus a Load Balancer in front so the App doesn\'t have to know which DB to ask. (Simplification: in production, multiple write-capable DBs need sharding by key or a multi-master setup — see simplifications.md. The pattern this lesson teaches — "always route DB traffic through an LB" — is what makes the next lesson, read replicas, possible.)',
@@ -501,7 +656,7 @@ export const puzzles = {
 
   newsfeedCore: {
     id: 'newsfeedCore',
-    order: 10,
+    order: 13,
     title: 'Newsfeed Core',
     blurb:
       'Build a Twitter-style mixed workload. Two clients with very different shapes: 100 Posters/sec writing new tweets, 1000 Readers/sec loading their feed. Same LB at the edge, but the paths through diverge — writes need to fan out asynchronously (so the API ack is fast), reads need to hit a cache (or you melt the DB). Two parallel pipelines, two sets of failure modes that can happen independently. Use edge labels (R / W / R+W) to route the two workloads. (Simplification: workers populate the feed cache implicitly — real systems have per-user inbox caches; we model the aggregate. See simplifications.md.)',
@@ -607,7 +762,7 @@ export const puzzles = {
 
   addCdn: {
     id: 'addCdn',
-    order: 11,
+    order: 14,
     title: 'Add a CDN at the Edge',
     blurb:
       'Your service handles 20,000 reads/sec — feed reads, profile data, avatars. Even with an internal Cache absorbing 80% of the DB load, every one of those 20k requests still pays the full LB → App → Cache round-trip (~24ms mean). For static or precomputed content you can do dramatically better: put a CDN at the very edge of your system — *before* the LB — and serve 95%+ of traffic from a node geographically close to the user (~1ms). The internal architecture only sees the misses. Targets: reads served ≥ 99%, mean latency ≤ 5ms, and you must use a CDN. (Simplification: real CDNs have hundreds of geographic PoPs — Cloudflare, Akamai, AWS CloudFront — we model the aggregate as one node. See simplifications.md.)',
@@ -678,7 +833,7 @@ export const puzzles = {
 
   twitterAtScale: {
     id: 'twitterAtScale',
-    order: 12,
+    order: 15,
     title: 'Twitter at Scale',
     blurb:
       'Curriculum capstone. 3000 Posters/sec + 50,000 Readers/sec. To pass, stack every pattern from prior lessons: CDN at the edge (Lesson 10), App pool behind an LB (Lessons 4–5), internal Cache (Lesson 5), DB cluster behind an LB (Lesson 6), Read Replicas behind their own LB (Lesson 7), Queue + Worker fanout (Lessons 8–9), CDN (Lesson 10). The whole curriculum, applied at once. (Simplification: real Twitter also has media via Object Storage + CDN, search via specialized indices, geographic regions — see simplifications.md for what we still defer.)',
@@ -819,7 +974,7 @@ export const puzzles = {
 
   asyncNotifications: {
     id: 'asyncNotifications',
-    order: 9,
+    order: 12,
     title: 'Async Notification Pipeline',
     blurb:
       'Your service handles 1000 notifications/sec — push, email, SMS, expensive third-party calls (~200ms each). Sending synchronously means clients wait on the external provider, and when the provider degrades your API latency degrades with it. Decouple: accept the notification, ack the client immediately, push the work onto a Queue, drain it asynchronously with a Worker pool. You now need TWO success rates: sync (API acks ≥ 99%) and background (Workers drain queue ≥ 99%). Sync p99 ≤ 100ms keeps the API snappy. Hint: the bottleneck might not be where you expect — open the metrics panel and watch both rates.',
@@ -906,7 +1061,7 @@ export const puzzles = {
 
   readReplicas: {
     id: 'readReplicas',
-    order: 8,
+    order: 11,
     title: 'Replicate Your Reads',
     blurb:
       'Reads are now 80% of the load (1500 req/s overall). Last lesson taught the DB Load Balancer pattern; now apply it asymmetrically. Read Replicas serve copies for reads but reject writes. Writes go directly to the Primary; reads fan out through a Load Balancer to the replica pool. Click each edge to label it R / W / R+W.',
@@ -975,7 +1130,7 @@ export const puzzles = {
 
   streamProcessingAtScale: {
     id: 'streamProcessingAtScale',
-    order: 14,
+    order: 17,
     title: 'Stream Processing at Scale (Design Kafka)',
     blurb:
       'Design a distributed commit log — what Kafka is. Three producer services emit 60,000 events/sec total. The canonical answer needs five interlocking ideas: (1) **partition the topic** — a Partition Router (Load Balancer) hashes events into N partitioned Queues, with `pubsub: true` so each partition is a real Kafka topic (every consumer group sees every event); (2) **distribute partitions across brokers** — broker regions on the canvas show where each partition\'s leader lives and where its RF=3 replicas (decorative markers) sit on the *other* brokers, the durability story Kafka rests on; (3) **multiple consumer groups** — the same partitioned topic feeds an independent real-time consumer group and an analytics consumer group, each draining the full stream (this is *the* Kafka-vs-RabbitMQ differentiator); (4) **shared sink cluster per group** — workers → Storage LB → 3-DB cluster (reuses Lesson 6\'s routing pattern on the sink side); (5) **a control plane** — the KRaft Controllers decorative node coordinates leader election + ISR tracking. Property panel teaching aids cover acks=all + min.insync.replicas semantics. *Hit "Read full lesson" for what we don\'t model on canvas, what\'s "extra extra" beyond the whiteboard, the partition-density caveat, and Kafka 4.0+ refinements.*',
@@ -1275,7 +1430,7 @@ export const puzzles = {
 
   tinyurlAtScale: {
     id: 'tinyurlAtScale',
-    order: 13,
+    order: 16,
     title: 'TinyURL at Interview Scale',
     blurb:
       'The canonical FAANG interview question: design a URL shortener at scale. 100 URL creates/sec from Posters, 10,000 redirects/sec from Visitors, plus 500 analytics events/sec that log every origin-side click. You\'re defending 8 questions interviewers ask: ID generation, collision avoidance, hot keys, caching, analytics logging, rate limiting, malicious URLs, link expiration. This puzzle answers 5 architecturally (CDN, KGS, RateLimiter, Cache, Queue+Workers); the other 3 (malicious filtering, TTL, custom aliases) are documented in simplifications.md as out-of-scope-for-the-canvas. Targets: reads ≥ 99%, writes ≥ 99%, background ≥ 99%, sync p99 ≤ 100ms, must use CDN + Rate Limiter + KGS + Queue.',
@@ -1430,6 +1585,9 @@ export const puzzleOrder = [
   'reachTheInternet',
   'pointDomain',
   'addLoadBalancer',
+  'persistWithDatabase',
+  'addACache',
+  'readWriteSplit',
   'urlShortener',
   'clusterDatabase',
   'readReplicas',
