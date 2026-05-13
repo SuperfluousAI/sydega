@@ -1428,6 +1428,230 @@ export const puzzles = {
     },
   },
 
+  fileStorageAtScale: {
+    id: 'fileStorageAtScale',
+    order: 18,
+    title: 'File Storage at Scale (Design Dropbox)',
+    slug: 'Design a cloud file storage service like Dropbox / Google Drive. Three workloads (metadata, uploads, downloads) + sync fan-out.',
+    blurb:
+      'Design a Dropbox/Google Drive-style file storage service. The architecture-layer answer separates THREE workloads with very different bottlenecks: (1) metadata operations dominate — browse / search / list / share at 10,000 ops/sec, heavily read-skewed and absorbed by an internal Cache; (2) uploads at 100 chunks/sec bypass the backend via presigned URLs — Client wires DIRECTLY to Blob Storage so backend never sees the bytes; (3) downloads at 5,000 chunks/sec go through a CDN at the edge. A sync fan-out path uses a pubsub Queue (same mechanic as Kafka) to broadcast "new chunk landed" events to multiple consumer groups representing different device types. Metadata DBs (relational, sharded) are visually distinct from Blob Storage (object store; in real Dropbox: Magic Pocket — custom exabyte-scale infra running off AWS).',
+    background: [
+      'What this lesson teaches well — on the canvas. Three distinct request streams flow through the same backend with three distinct bottleneck stories: metadata ops (read-heavy, cache-absorbed, sharded relational), uploads (low rate, byte-heavy, bypass via presigned URLs straight to blob storage), downloads (CDN-absorbed at the edge). The architecture separates metadata from blob storage (different DB roles: `database:metadata` vs `database:blob`) — sim semantics are the same, but the visual distinction matches what every canonical Dropbox/GDrive answer draws.',
+      'The presigned URL bypass — the load-bearing optimization. Upload Clients have TWO outgoing edges: a small "coordination" stream to the Upload Service (which writes a manifest entry to the Metadata DB cluster) AND a direct edge to Blob Storage carrying the actual chunks. Without this bypass, every byte would flow through backend bandwidth — 100 chunks/sec × 4MB each = 400 MB/sec the backend would have to absorb. With presigned URLs, the backend is sized for ops, not bytes. The architecture-layer answer is "two parallel paths from the client."',
+      'Sync fan-out via pubsub Queue. When a chunk lands in Blob Storage, the user\'s OTHER devices need to know. We model the event stream as a synthetic Client `sync-trigger` (representing Blob Storage events) feeding a Queue with `pubsub: true` (same mechanic as Lesson 17 — every consumer group sees every event). Two consumer groups represent two device types: real-time (mobile / laptop, always-connected) and batch (server-side reconciliation, less time-sensitive). Each group has its own worker pool draining the full event stream into a device-local sync state DB.',
+      'Why the workload numbers are what they are. Real Dropbox: 500M users, 100M DAU, 100B files (avg 100KB), exabytes of storage. Our 10k metadata ops/sec + 100 uploads/sec + 5k downloads/sec + 1k sync events/sec is whiteboard scale — same patterns, ~3 orders of magnitude smaller. The PROPORTIONS are what matter: metadata >> downloads >> uploads, sync events << metadata. In a 2026 interview, walk through capacity math at the rate the interviewer asks for; the architecture stays the same.',
+      'Extra extra — Kafka-style components we DO draw, and Dropbox-style internals we do NOT. Reuses from earlier lessons: pubsub Queue + consumer groups (Lesson 17), DB cluster behind LB (Lesson 10), internal cache + CDN (Lessons 7 + 14), R/W edge split (Lesson 8). The `magicPocket` decorative node is the Dropbox-specific tell: it labels the blob storage as Dropbox\'s custom infrastructure (off AWS since ~2015, exabyte-scale, SMR drives, 12+ nines durability). What we do NOT draw: chunking + content-defined chunking, hash-based deduplication, the presigned-URL signing mechanism itself, the WebSocket-or-long-polling sync protocol, conflict resolution (last-write-wins / "conflicted copy"). All five are in `simplifications.md` — deep-dive talk-track material, not whiteboard items.',
+      'Soft caveat — single-region modeling. Real Dropbox/GDrive runs in multiple regions with cross-region replication for disaster recovery + geographic latency. Our canvas models a single region. The patterns transfer (clusters + LBs scale within a region; cross-region adds a separate layer of replication mechanics we don\'t represent). For an interview, mention "we\'d also have regional replication via Mirror... " as a follow-up when asked about availability.',
+      'Where to dig further. Research is in `puzzle-research/dropbox.md` (8 parseable sources including the HelloInterview deep dive, GeeksforGeeks scale numbers, and four Dropbox engineering posts on Magic Pocket). Architecture vs production-reality is the split: HelloInterview teaches the canonical S3-backed answer; Dropbox\'s blog explains why Magic Pocket replaced S3 for 90%+ of user data. Both belong in a senior-level answer.',
+    ],
+    sources: [
+      { title: 'Hello Interview — Design a File Storage Service Like Dropbox', url: 'https://www.hellointerview.com/learn/system-design/problem-breakdowns/dropbox', note: 'Canonical whiteboard answer + 4 deep-dive questions (chunking, performance, security, sync)' },
+      { title: 'GeeksforGeeks — Design Dropbox System Design', url: 'https://www.geeksforgeeks.org/system-design/design-dropbox-a-system-design-interview-question/', note: 'Concrete scale numbers (100M DAU, 100B files, 10PB) + component breakdown' },
+      { title: 'DesignGurus — How to Design a Cloud Storage Service', url: 'https://www.designgurus.io/blog/design-cloud-storage-service', note: 'Microservice separation (Auth/Upload/Metadata/Storage/Sync) + pub/sub sync model' },
+      { title: 'Medium / Double Pointer — System Design Interview: Dropbox / Google Drive', url: 'https://medium.com/double-pointer/system-design-interview-dropbox-or-a-similar-file-storage-sharing-service-google-drive-34912a4c1c21', note: 'Request queue + per-client response queue sync pattern; 2MB chunk variant' },
+      { title: 'System Design School — Design Dropbox: Complete Walkthrough', url: 'https://systemdesignschool.io/problems/dropbox/solution', note: 'Long-polling sync + 4MB chunks + SHA-256 dedup' },
+      { title: 'Dropbox Engineering — Scaling to Exabytes (Magic Pocket)', url: 'https://dropbox.tech/infrastructure/magic-pocket-infrastructure', note: 'The custom exabyte-scale blob storage Dropbox built off AWS' },
+      { title: 'Dropbox Engineering — Inside the Magic Pocket', url: 'https://dropbox.tech/infrastructure/inside-the-magic-pocket', note: 'Magic Pocket internals: erasure coding, durability targets, immutability' },
+      { title: 'Dropbox Engineering — Improving storage efficiency in Magic Pocket (2024-2025)', url: 'https://dropbox.tech/infrastructure/improving-storage-efficiency-in-magic-pocket-our-immutable-blob-store', note: 'Recent overhead-reduction work in the immutable blob store' },
+    ],
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'rateLimiter',
+      'loadBalancer',
+      { type: 'service', role: 'appServer' },
+      { type: 'service', role: 'worker' },
+      { type: 'cache', role: 'internal' },
+      { type: 'cache', role: 'cdn' },
+      'queue',
+      { type: 'database', role: 'metadata' },
+      { type: 'database', role: 'blob' },
+      'magicPocket',
+    ],
+    initialNodes: () => [
+      node('metadata-clients', 'client', { x: 40, y: 100 }, { rps: 10000, readRatio: 0.95 }),
+      node('upload-coord-clients', 'client', { x: 40, y: 360 }, { rps: 100, readRatio: 0 }),
+      node('upload-byte-clients', 'client', { x: 40, y: 500 }, { rps: 100, readRatio: 0 }),
+      node('download-clients', 'client', { x: 40, y: 660 }, { rps: 5000, readRatio: 1 }),
+      node('sync-trigger', 'client', { x: 40, y: 880 }, { rps: 1000, readRatio: 0 }),
+    ],
+    requirements: [
+      {
+        key: 'syncSuccess',
+        label: 'Sync success rate ≥ 99% across all three workloads',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          '10k metadata ops + 100 uploads + 5k downloads = 15,100 ops/sec sync-side. Drop one of: the metadata cache (DB overload), ' +
+          'the CDN (blob layer melts under downloads), the presigned-URL bypass (backend bandwidth dies) — and success rate falls.',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (sync fan-out drains)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'Sync events fan out to multiple consumer groups (each device type sees the full event stream). With `pubsub: true` on ' +
+          'the Sync Queue and 2 consumer groups, totalBackgroundAttempted = 1000 × 2 = 2000. Each group\'s workers need to drain 1000/sec.',
+      },
+      {
+        key: 'hasGateway',
+        label: 'Has a Load Balancer (gateway)',
+        predicate: { kind: 'presence', type: 'loadBalancer', min: 1 },
+        lesson:
+          'A gateway LB fronts the metadata path so traffic can be spread across multiple service instances. Real systems also include a Rate Limiter ' +
+          '(429 Too Many Requests) — encouraged but not required for this predicate.',
+      },
+      {
+        key: 'hasMetadataCluster',
+        label: 'Metadata DB cluster: 2+ Databases tagged role:metadata',
+        predicate: { kind: 'presence', type: 'database', role: 'metadata', min: 2 },
+        lesson:
+          'Metadata ops dominate load — browse + search + list + share + version history. Default DB cap is 1000; serving 10k ' +
+          'metadata ops/sec needs a sharded cluster behind a LB. Each database node should be configured with role: \'metadata\'.',
+      },
+      {
+        key: 'hasBlobStorage',
+        label: 'Blob Storage cluster: 2+ Databases tagged role:blob',
+        predicate: { kind: 'presence', type: 'database', role: 'blob', min: 2 },
+        lesson:
+          'Blob Storage is architecturally distinct from the Metadata DB — different access patterns, scale, cost model. Tag your ' +
+          'storage nodes with role: \'blob\' so the canvas reads as a real Dropbox/GDrive diagram. Production reality is S3 (or Dropbox\'s ' +
+          'Magic Pocket).',
+      },
+      {
+        key: 'hasMetadataCache',
+        label: 'Has an internal Cache (absorbs metadata reads)',
+        predicate: { kind: 'presence', type: 'cache', role: 'internal', min: 1 },
+        lesson:
+          'Metadata reads are 95% of metadata ops (browse + search). Without a cache, 9,500 reads/sec slam the metadata DB cluster — over the ' +
+          'aggregate 3,000 cap. An internal cache at 85% hit rate reduces DB read load to ~1,400/sec — well within capacity.',
+      },
+      {
+        key: 'hasCdn',
+        label: 'Has a CDN at the edge (absorbs downloads)',
+        predicate: { kind: 'presence', type: 'cache', role: 'cdn', min: 1 },
+        lesson:
+          'Downloads at 5,000 chunks/sec would melt the blob layer if served from origin. A CDN at the edge with 90% hit rate ' +
+          'reduces origin load to 500/sec — comfortable for the blob cluster.',
+      },
+      {
+        key: 'hasSyncQueue',
+        label: 'Has a Queue (for sync fan-out)',
+        predicate: { kind: 'presence', type: 'queue', min: 1 },
+        lesson:
+          'Sync events fan out to multiple device types. A Queue with `pubsub: true` broadcasts each event to every consumer group (each ' +
+          'group represents a different device class). Same mechanic as Lesson 17 (Kafka).',
+      },
+      {
+        key: 'hasMultipleConsumerGroups',
+        label: 'At least 2 consumer groups for sync',
+        predicate: { kind: 'metric', name: 'consumerGroupCount', op: '>=', value: 2 },
+        lesson:
+          'Real Dropbox needs to sync to multiple device types (laptops, mobile, server-side reconciliation). Tag each Worker with its ' +
+          'consumerGroup (e.g. "realtime-devices", "batch-devices") in the property panel. With the Sync Queue\'s `pubsub: true` flag, ' +
+          'every group sees the full event stream independently.',
+      },
+    ],
+    solution: () => ({
+      // === Workload + capacity math (verified) ===
+      // Metadata path (10k ops/sec, 95% read):
+      //   → rate-limit (cap 12k) → gateway-lb (cap 12k) → 2 metadata-svcs at cap 5000 each
+      //   each service: 4750 reads + 250 writes
+      //   reads:  9500 total → metadata-cache (cap 12k, hit 0.85) absorbs 8075;
+      //           1425 miss → metadata-db-lb → 3 metadata DBs (475 each)
+      //   writes: 500 total → metadata-db-lb → 3 DBs (167 each)
+      //   plus upload-service writes: 100 → 33 per DB
+      //   each metadata DB: 475 + 167 + 33 = 675 ops/sec (cap 1000 ✓)
+      //
+      // Upload bytes (100/sec, presigned bypass):
+      //   → blob-lb (cap 8000) → 3 blob-storages (cap 5000 each) → 33/sec each
+      //
+      // Download (5k/sec):
+      //   → cdn (cap 1M, hit 0.9) absorbs 4500; 500 miss → blob-lb
+      //   total at blob-lb: 100 uploads + 500 download misses = 600
+      //   per blob storage: 200/sec (cap 5000 ✓)
+      //
+      // Sync (1000 events/sec, pubsub):
+      //   → sync-queue (pubsub:true) with out-degree 2
+      //   totalBackgroundAttempted = 1000 × 2 = 2000
+      //   each consumer group's worker sees full 1000/sec
+      //   workers (cap 1500) drain to per-group sink DBs (cap 2000)
+      //   totalBackgroundServed = 2000 → 100%
+      nodes: [
+        // ─── Producers ─────────────────────────────────────────────────
+        node('metadata-clients', 'client', { x: 40, y: 100 }, { rps: 10000, readRatio: 0.95 }),
+        node('upload-coord-clients', 'client', { x: 40, y: 360 }, { rps: 100, readRatio: 0 }),
+        node('upload-byte-clients', 'client', { x: 40, y: 500 }, { rps: 100, readRatio: 0 }),
+        node('download-clients', 'client', { x: 40, y: 660 }, { rps: 5000, readRatio: 1 }),
+        node('sync-trigger', 'client', { x: 40, y: 880 }, { rps: 1000, readRatio: 0 }),
+
+        // ─── Metadata tier ────────────────────────────────────────────
+        node('gateway-rate-limit', 'rateLimiter', { x: 240, y: 100 }, { capacity: 12000 }),
+        node('gateway-lb', 'loadBalancer', { x: 440, y: 100 }, { capacity: 12000 }),
+        node('metadata-svc-0', 'service', { x: 640, y: 40 }, { role: 'appServer', capacity: 5000 }),
+        node('metadata-svc-1', 'service', { x: 640, y: 160 }, { role: 'appServer', capacity: 5000 }),
+        node('metadata-cache', 'cache', { x: 840, y: 100 }, { role: 'internal', capacity: 12000, hitRate: 0.85 }),
+        node('metadata-db-lb', 'loadBalancer', { x: 1040, y: 100 }, { capacity: 3000 }),
+        node('metadata-db-0', 'database', { x: 1240, y: 20 }, { role: 'metadata', capacity: 1000 }),
+        node('metadata-db-1', 'database', { x: 1240, y: 120 }, { role: 'metadata', capacity: 1000 }),
+        node('metadata-db-2', 'database', { x: 1240, y: 220 }, { role: 'metadata', capacity: 1000 }),
+
+        // ─── Upload coordination ──────────────────────────────────────
+        node('upload-service', 'service', { x: 440, y: 360 }, { role: 'appServer', capacity: 200 }),
+
+        // ─── Blob tier ─────────────────────────────────────────────────
+        node('cdn', 'cache', { x: 240, y: 660 }, { role: 'cdn', hitRate: 0.9 }),
+        node('blob-lb', 'loadBalancer', { x: 640, y: 580 }, { capacity: 8000 }),
+        node('blob-storage-0', 'database', { x: 880, y: 480 }, { role: 'blob', capacity: 5000 }),
+        node('blob-storage-1', 'database', { x: 880, y: 600 }, { role: 'blob', capacity: 5000 }),
+        node('blob-storage-2', 'database', { x: 880, y: 720 }, { role: 'blob', capacity: 5000 }),
+        node('magic-pocket', 'magicPocket', { x: 1120, y: 600 }, {}),
+
+        // ─── Sync tier ─────────────────────────────────────────────────
+        node('sync-queue', 'queue', { x: 240, y: 880 }, { topic: 'chunk-events', pubsub: true }),
+        node('realtime-worker', 'service', { x: 440, y: 820 }, { role: 'worker', capacity: 1500, consumerGroup: 'realtime-devices' }),
+        node('batch-worker', 'service', { x: 440, y: 940 }, { role: 'worker', capacity: 1500, consumerGroup: 'batch-devices' }),
+        node('realtime-sink-db', 'database', { x: 640, y: 820 }, { role: 'metadata', capacity: 2000 }),
+        node('batch-sink-db', 'database', { x: 640, y: 940 }, { role: 'metadata', capacity: 2000 }),
+      ],
+      edges: [
+        // Metadata flow
+        edge('metadata-clients', 'gateway-rate-limit'),
+        edge('gateway-rate-limit', 'gateway-lb'),
+        edge('gateway-lb', 'metadata-svc-0'),
+        edge('gateway-lb', 'metadata-svc-1'),
+        edge('metadata-svc-0', 'metadata-cache', 'read'),
+        edge('metadata-svc-1', 'metadata-cache', 'read'),
+        edge('metadata-cache', 'metadata-db-lb', 'read'),
+        edge('metadata-svc-0', 'metadata-db-lb', 'write'),
+        edge('metadata-svc-1', 'metadata-db-lb', 'write'),
+        edge('metadata-db-lb', 'metadata-db-0'),
+        edge('metadata-db-lb', 'metadata-db-1'),
+        edge('metadata-db-lb', 'metadata-db-2'),
+
+        // Upload coordination — writes a manifest into the metadata DB
+        edge('upload-coord-clients', 'upload-service'),
+        edge('upload-service', 'metadata-db-lb', 'write'),
+
+        // Upload bytes — presigned URL bypass (Client direct to Blob Storage)
+        edge('upload-byte-clients', 'blob-lb'),
+        edge('blob-lb', 'blob-storage-0'),
+        edge('blob-lb', 'blob-storage-1'),
+        edge('blob-lb', 'blob-storage-2'),
+
+        // Downloads — CDN at the edge, fall through to blob-lb on miss
+        edge('download-clients', 'cdn'),
+        edge('cdn', 'blob-lb'),
+
+        // Sync fan-out — pubsub Queue broadcasts to 2 consumer groups
+        edge('sync-trigger', 'sync-queue'),
+        edge('sync-queue', 'realtime-worker'),
+        edge('sync-queue', 'batch-worker'),
+        edge('realtime-worker', 'realtime-sink-db'),
+        edge('batch-worker', 'batch-sink-db'),
+      ],
+    }),
+  },
+
   tinyurlAtScale: {
     id: 'tinyurlAtScale',
     order: 16,
@@ -1597,6 +1821,7 @@ export const puzzleOrder = [
   'twitterAtScale',
   'tinyurlAtScale',
   'streamProcessingAtScale',
+  'fileStorageAtScale',
 ];
 export const defaultPuzzleId = 'buildComputer';
 

@@ -2137,3 +2137,153 @@ No mutations to sim result shape or to any data the simulator reads. No risk per
 - **Persisted size sanity-check on reload**: if localStorage has stale values from a different viewport (e.g. a small screen wrote 100px, user reloads on a big screen), the layout still applies the stored size. Clamping is enforced during drag but not at load. Edge case.
 - **Mobile / narrow viewports**: the 3-column grid + chrome assumes desktop widths. The whole game still assumes desktop; not regressing further.
 
+## Session 1 Part 21 — 2026-05-13: 3 new basic lessons (L6-L8) + Lesson 18 "File Storage at Scale (Design Dropbox)". The curriculum doubles from 14 to 18 lessons. Test count 335 → 358 (+23).
+
+### What this Part is
+
+Two parallel arcs:
+1. **Curriculum gap-fill**: three basic flow lessons inserted between L5 (Add a Load Balancer) and L6 (URL Shortener), pushing existing lessons +3. Bridges the jump from "spread requests across VPSes" to the full "Client + LB + App + Cache + DB" stack of the URL Shortener.
+2. **Lesson 18 — Design Dropbox**: the fourth FAANG-grade capstone (Twitter L15, TinyURL L16, Kafka L17, Dropbox L18). Audit-driven proposal → operator confirmed → built.
+
+### Curriculum gap-fill (L6-L8)
+
+Three new lessons inserted before the old L6 (URL Shortener):
+- **L6 Persist with a Database**: Client → AppServer → Database. The stateful-server primitive. Workload 500 req/s mixed.
+- **L7 Add a Cache**: Client → App → internal Cache → DB. Cache absorbs read load. Workload 2000 reads/sec; default 80% hit rate → DB sees 400.
+- **L8 Read / Write Split**: Reads go through Cache; writes bypass to DB direct. Edge labels R/W introduced. Workload 1000 reads + 200 writes/sec.
+
+Mechanical renumbering: existing L6-L14 bumped to L9-L17. `puzzleOrder` updated. Each lesson is a focused 3-5 node canonical with 2-3 requirements. No new component types — uses existing client / service:appServer / cache:internal / database.
+
+Tests 335 → 347 (+12 from framework auto-coverage).
+
+### Lesson 18 — Design Dropbox (the architecture answer)
+
+Full audit-driven build following the L13/L14/L17 workflow:
+
+1. **Research phase** (`puzzle-research/dropbox.md`): 8 parseable sources — HelloInterview, GeeksforGeeks, DesignGurus, Medium / Double Pointer, System Design School, plus four Dropbox engineering blog posts on Magic Pocket. Triangulated workload numbers, component shape, sync protocol details.
+2. **Proposal phase** (`puzzle-research/dropbox-puzzle-proposal.md`): laid out the canonical, 7 decisions for operator confirmation. After research, two decisions changed from R1: (a) Database becomes role-aware (metadata/blob) instead of using a `dbRole` config field — consistent with Cache's internal/cdn pattern; (b) presigned-URL bypass modeled as two parallel edges from Client (one to backend, one direct to blob), not a single bypass edge.
+3. **Operator confirmed** all 7 decisions including the R2 deltas.
+4. **Build**: ~26 nodes, ~25 edges, 9 requirements, 4 targeted failure tests.
+
+### The three workloads (architecture-layer pedagogy)
+
+Lesson 18's headline mechanic is **three distinct request streams with different bottlenecks**:
+
+```
+Metadata Clients (10k ops/sec, 95% read)
+   → Rate Limiter → Gateway LB → 2 Metadata Services
+                                    ↓ R    ↓ W
+                                Metadata Cache (hit 0.85)
+                                    ↓ R (miss)         ↓ W
+                                Metadata DB LB → 3 metadata-role DBs
+
+Upload Coord Clients (100/sec)
+   → Upload Service → Metadata DB LB (writes a manifest entry)
+
+Upload Byte Clients (100/sec)   ← presigned-URL BYPASS — direct edge
+   ─────────────────────────────────────→ Blob LB → 3 blob-role DBs
+                                              ↑
+Download Clients (5k/sec) → CDN (hit 0.9) ─ misses 500/s ─┘
+
+Sync Trigger (1k events/sec) → Sync Queue (pubsub: true)
+                                 ├─→ Realtime Worker  → Realtime Sink DB
+                                 └─→ Batch Worker     → Batch Sink DB
+                                 (2 consumer groups: realtime-devices + batch-devices)
+
+[Magic Pocket decorative marker — labels Blob Storage as Dropbox's custom infra]
+```
+
+The pedagogy:
+- **Metadata >> bytes** for ops. Real Dropbox: browsing/search dominate; uploading is rare per user. Cache + cluster the metadata tier accordingly.
+- **Presigned URLs are the load-bearing optimization**: backend never sees the upload bytes. Visualized as TWO parallel edges from upload-clients — one to the backend (small metadata coord) and one direct to blob storage (the bytes).
+- **CDN absorbs downloads**: 90% hit rate cuts blob layer load from 5000/sec to 500/sec.
+- **Metadata vs Blob are visually distinct**: Database is now role-aware (`metadata` red, `blob` purple) — same simulator semantics, different label/color, predicate-distinguishable.
+- **Sync = pubsub fan-out**: reuses Kafka's mechanic from L17. Multiple consumer groups represent multiple device types.
+
+### Primitives extended this Part
+
+1. **Database role-awareness** (mirroring Cache's role pattern):
+   - `database` componentType now has `roles: { metadata: {...}, blob: {...} }` with `defaultRole: 'metadata'`.
+   - `defaultsFor` and `metaFor` honor `defaultRole` so existing pre-refactor puzzles (Lessons 6-17) transparently keep working — their database nodes silently inherit `role: 'metadata'`.
+   - Predicates can scope by role: `{ kind: 'presence', type: 'database', role: 'blob', min: 2 }`.
+   - Existing label "Database" preserved for the metadata role; new label "Blob Storage" for the blob role.
+
+2. **`defaultRole` field on componentType**: applied at config-creation time when no role is set. Backward-compatible mechanism for adding roles to a previously non-role-aware type without breaking older puzzles.
+
+3. **`magicPocket` decorative type**: Dropbox-blue label "Magic Pocket". Sim-ignored marker for the production-reality story (off-AWS exabyte-scale custom infra). Same decorative pattern as kafkaReplica / kafkaController from Lesson 17.
+
+### Final coverage table — Lesson 18
+
+| Element | Required by HelloInterview / GeeksforGeeks / DesignGurus | On canvas | How |
+|---|---|---|---|
+| Clients (multiple workloads) | ✓ | ✓ | 5 Clients (metadata / upload coord / upload bytes / downloads / sync events) |
+| API Gateway / Rate Limiter | ✓ | ✓ | RateLimiter + LoadBalancer |
+| Upload Service | ✓ | ✓ | service:appServer (coord-only path) |
+| Metadata Service + DB cluster | ✓ | ✓ | 2 metadata services + cache + DB cluster |
+| Blob Storage (distinct from metadata DB) | ✓ explicit in all sources | ✓ | role:blob databases, distinct color/label |
+| **Presigned URL bypass** | ✓ load-bearing optimization | ✓ | upload-byte-clients wires DIRECTLY to blob-lb |
+| CDN at edge | ✓ | ✓ | cache:cdn fronting downloads |
+| Sync / Notification | ✓ | ✓ | pubsub Queue + multiple consumer groups |
+| Multiple consumer groups | ✓ defining sync feature | ✓ | realtime-devices + batch-devices |
+| Magic Pocket (production reality) | optional name-drop | ✓ | decorative marker |
+| Chunking + CDC | deep-dive only | ⚠️ | simplifications.md #14 |
+| Hash-based dedup | deep-dive only | ⚠️ | simplifications.md #15 |
+| Presigned URL mechanism (signing/expiry) | deep-dive only | ⚠️ | simplifications.md #16 (topology on canvas; mechanism in deep dive) |
+| WebSocket + long-polling hybrid | deep-dive only | ⚠️ | simplifications.md #17 |
+| Conflict resolution | deep-dive only | ⚠️ | simplifications.md #18 |
+
+10 of 10 architecture-layer elements visible on canvas. Production-reality + 5 deep-dive items in simplifications.md (entries #14-#19 added this Part).
+
+### Failure tests (4)
+
+1. **No CDN** → downloads route directly to blob-lb; `hasCdn` predicate fails.
+2. **No metadata cache** → 9,500 reads/sec slam metadata-db-lb (cap 3000) → drops; `hasMetadataCache` predicate fails AND success rate drops.
+3. **No blob-role databases** (everything tagged metadata) → `hasBlobStorage` predicate fails.
+4. **Single consumer group** (drop batch-worker + sink) → `hasMultipleConsumerGroups` predicate fails (consumerGroupCount=1).
+
+I tried a 5th "single metadata DB" test but the sync-sink-DBs (also role:metadata) made the predicate count harder to fail without more invasive setup. Dropped — the 4 covering tests already exercise the load-bearing pedagogical failures.
+
+### simplifications.md additions (6)
+
+- **#14 Chunking + content-defined chunking** — 4MB blocks, rolling-hash boundaries to avoid cascade on insert
+- **#15 Hash-based deduplication** — SHA-256 + reference counting; 30-70% dedup ratios in production
+- **#16 Presigned URLs** — short TTL, per-object scope, signature includes user+bucket+key+expiry
+- **#17 WebSocket + long-polling sync hybrid** — defense in depth: WebSocket primary + long-polling fallback + periodic full sync
+- **#18 Conflict resolution** — last-write-wins + conflicted-copy file naming
+- **#19 Magic Pocket** — Dropbox's exabyte-scale custom blob store; SMR drives; 12+ nines durability; off-AWS since 2015-2016
+
+### Test count
+
+335 → 358 (+23):
+- +12 from 3 new basic lessons (auto framework coverage: canonical-passes, contract, componentInfo)
+- +1 framework auto: canonical solution for L18 passes
+- +2 from magicPocket componentType (contract + componentInfo)
+- +4 framework auto-tests for database:metadata + database:blob roles (contract + componentInfo each)
+- +4 targeted failure tests for L18 (no CDN, no cache, no blob role, single consumer group)
+
+All passing. Build clean.
+
+### Audit per the field-add rule
+
+Database refactor + magicPocket + 3 new basic lessons + Lesson 18. Consumer audit:
+- `componentTypes.js`: database refactored to role-aware. `defaultsFor` and `metaFor` updated with `defaultRole` fallback. magicPocket added. ✓
+- `componentInfo.js`: added entries for database:metadata, database:blob, magicPocket. Base `database` entry kept for fallback. ✓
+- `simulator.js`: unchanged — role-aware types already supported via `countNodesByType` (counts both bare type and type:role compound). ✓
+- `puzzles.js`: existing lessons (6-17 renumbered) keep working because defaultRole 'metadata' is applied. Lesson 18 explicitly sets `role: 'blob'` for blob storage. ✓
+- All existing tests still pass. ✓
+
+Clean. The `defaultRole` mechanism is the architectural answer that makes Database role-aware without breaking 17 existing lessons.
+
+### Things to confirm in next play-test pass
+
+- Lesson 18 layout in browser: 26 nodes spread across the canvas; needs visual breathing room similar to Lesson 17.
+- Verify Magic Pocket's distinctive color reads well.
+- The "two parallel edges from upload-clients" visual: is the bypass pattern legible without lesson-copy support?
+- Sync workers + sinks at the bottom of the canvas — confirm they fit and don't get clipped by the scroll affordance.
+
+### What this Part didn't address
+
+- **Multi-region replication**: Lesson 18 models a single region. Real Dropbox/GDrive runs in multiple regions with cross-region replication. Out of scope for now; documented in the lesson's background paragraph 6.
+- **End-to-end encryption (client-side AES-256)**: not on canvas, not in simplifications.md. Could be added if a future audit surfaces demand.
+- **The fifth failure test (single metadata DB)**: covered conceptually by the no-cache test which DOES overload the cluster. Skipping.
+

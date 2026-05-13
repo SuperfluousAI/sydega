@@ -383,20 +383,42 @@ export const componentTypes = {
       },
     },
   },
+  // Database is role-aware: `metadata` (relational / OLTP — the default; what
+  // Lessons 6-17 use) and `blob` (object store like S3 / Magic Pocket —
+  // introduced in Lesson 18). Sim semantics are identical for both: a sink
+  // that accepts reads + writes up to capacity. Visual + label + defaults
+  // differ so the architecture-layer story (metadata-tier vs blob-tier) is
+  // legible on canvas. Cache uses the same role pattern (internal / cdn).
   database: {
-    label: 'Database',
-    color: '#ef4444',
     role: 'sink',
     acceptsReads: true,
     acceptsWrites: true,
     hasInput: true,
     hasOutput: false,
-    defaults: { capacity: 1_000, latency: 30, p99Latency: 90 },
+    // Default role applied at node-creation time when no role is set in the
+    // config override. Keeps Lessons 6-17 (single-flavor "Database") working
+    // unchanged — every database node silently inherits role: 'metadata'.
+    defaultRole: 'metadata',
     props: [
       { key: 'capacity', label: 'Capacity (req/s)', type: 'number', min: 1, step: 100 },
       { key: 'latency', label: 'Mean added latency (ms)', type: 'number', min: 0, step: 1 },
       { key: 'p99Latency', label: 'p99 added latency (ms)', type: 'number', min: 0, step: 1 },
     ],
+    roles: {
+      metadata: {
+        label: 'Database',
+        color: '#ef4444',
+        defaults: { capacity: 1_000, latency: 30, p99Latency: 90 },
+      },
+      blob: {
+        label: 'Blob Storage',
+        color: '#8b5cf6',
+        // Object stores (S3, Magic Pocket) scale to tens of thousands of ops/s
+        // per logical bucket; per-object latency is higher than a relational
+        // DB (network hops + chunk reconstruction).
+        defaults: { capacity: 10_000, latency: 80, p99Latency: 240 },
+      },
+    },
   },
   readReplica: {
     label: 'Read Replica',
@@ -450,6 +472,22 @@ export const componentTypes = {
     defaults: {},
     props: [],
   },
+  // ─── Lesson 18 decorative — Dropbox's Magic Pocket ──────────────────────
+  // Custom-built exabyte-scale immutable blob storage Dropbox uses in place
+  // of S3 for 90% of user data. Decorative — the sim ignores it. The marker
+  // is for students to understand the architecture-vs-production-reality
+  // distinction: "S3" is the interview answer; "Magic Pocket" is what
+  // actually runs in Dropbox's data centers (off AWS since ~2016).
+  magicPocket: {
+    label: 'Magic Pocket',
+    color: '#2563eb',
+    role: 'decorative',
+    decorative: true,
+    hasInput: false,
+    hasOutput: false,
+    defaults: {},
+    props: [],
+  },
 };
 
 export function defaultsFor(typeKey, role) {
@@ -462,15 +500,23 @@ export function defaultsFor(typeKey, role) {
   // the returned config so the node persists which sub-kind it is.
   const meta = componentTypes[typeKey];
   if (!meta) return {};
+  // For role-aware types, apply a default role when none is provided. This
+  // lets a non-role-aware caller (e.g. `node('db-1', 'database', ...)` from
+  // an older puzzle) keep working while role-aware types adopt sub-kinds.
+  // The database type uses this for backward compatibility — Lessons 6-17
+  // never set a database role; they silently get role: 'metadata'.
+  const effectiveRole = role || (meta.roles && meta.defaultRole) || undefined;
   const baseSrc = meta.defaults || {};
-  const roleSrc = role && meta.roles?.[role]?.defaults ? meta.roles[role].defaults : {};
+  const roleSrc = effectiveRole && meta.roles?.[effectiveRole]?.defaults
+    ? meta.roles[effectiveRole].defaults
+    : {};
   const src = { ...baseSrc, ...roleSrc };
   const out = {};
   for (const k of Object.keys(src)) {
     const v = src[k];
     out[k] = typeof v === 'function' ? v() : v;
   }
-  if (role && meta.roles?.[role]) out.role = role;
+  if (effectiveRole && meta.roles?.[effectiveRole]) out.role = effectiveRole;
   return out;
 }
 
@@ -481,7 +527,10 @@ export function defaultsFor(typeKey, role) {
 export function metaFor(node) {
   const meta = componentTypes[node?.data?.type];
   if (!meta) return null;
-  const role = node?.data?.config?.role;
+  // Fall back to defaultRole when the node was created before role-awareness
+  // (e.g. a database node from a pre-refactor puzzle definition). Keeps
+  // rendering meta complete even if config.role is missing.
+  const role = node?.data?.config?.role || meta.defaultRole;
   if (meta.roles && role && meta.roles[role]) {
     const merged = { ...meta, ...meta.roles[role], role };
     // Role-specific props extend the base type's props (don't replace).

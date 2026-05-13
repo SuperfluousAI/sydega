@@ -210,6 +210,32 @@ export const componentInfo = {
       '(to scale reads horizontally).',
     connects: 'Wires from App Servers, from Cache (on miss), or — in Lesson 6 — accepts the Write traffic the App Servers route here.',
   },
+  'database:metadata': {
+    description:
+      'A relational / OLTP database — what most "Database" in a system design diagram means. Stores transactional data: ' +
+      'users, files, sharing ACLs, version history, anything that needs ACID semantics and rich querying.',
+    usage:
+      'Default capacity 1000 req/s, latency 30ms. Reads and writes both pass through. Typically clustered behind a Load ' +
+      'Balancer (Lesson 10) and fronted by an internal Cache (Lesson 7) to absorb read load.',
+    connects: 'Wires from App Servers, from a DB Load Balancer, or from a Cache (on miss).',
+    realWorld:
+      'PostgreSQL, MySQL, CockroachDB, DynamoDB. Sharded by primary key (often user_id or workspace_id). ' +
+      'In a Dropbox-style architecture (Lesson 18), this is the metadata tier — separate from blob storage.',
+  },
+  'database:blob': {
+    description:
+      'Object / blob storage — for unstructured bytes (files, photos, video, chunks). Key/value access by object key; ' +
+      'no rich querying. Vastly higher capacity than a relational DB and tuned for bandwidth rather than ops.',
+    usage:
+      'Default capacity 10,000 req/s, latency 80ms. Accepts reads + writes. In real systems, clients write to it directly ' +
+      'via presigned URLs (bypassing backend bandwidth); we model that by wiring Client → Blob Storage as a direct edge.',
+    connects:
+      'Wires from Clients (direct uploads via presigned URLs) and from a CDN (on miss). Reads to it usually come through ' +
+      'a CDN. Writes can come straight from clients or via an Upload Service for metadata coordination.',
+    realWorld:
+      'AWS S3, Google Cloud Storage, Azure Blob, Dropbox Magic Pocket. Real deployments have 11+ nines of durability via ' +
+      'replication + erasure coding. Often the cheapest tier in storage cost; presigned URLs are the load-bearing pattern.',
+  },
   readReplica: {
     description: 'A read-only copy of the Database. Scales read capacity, but cannot accept writes.',
     usage:
@@ -230,6 +256,18 @@ export const componentInfo = {
       'In real Kafka, a partition\'s leader handles reads/writes; followers pull from the leader and join the ISR ' +
       'once caught up. We don\'t model the replica state machine (it\'s time-axis); this marker just makes the ' +
       'topology visible to the reviewer.',
+  },
+  magicPocket: {
+    description:
+      'Decorative marker for Dropbox\'s Magic Pocket — the custom-built exabyte-scale immutable blob store Dropbox runs ' +
+      'in place of S3 for 90%+ of user data (since the 2015-2016 exodus from AWS). Pure visual; the sim ignores it.',
+    usage:
+      'Drop one near Blob Storage in a Dropbox-style design. Signals to the reader that the "blob store" ISN\'T always S3 ' +
+      'in production — companies at exabyte scale often build custom infrastructure for cost + durability.',
+    connects: 'Conceptually wraps the Blob Storage tier. No flow.',
+    realWorld:
+      'Magic Pocket: erasure-coded blob store running on SMR (shingled magnetic recording) HDDs for density. 12+ nines of ' +
+      'durability, 99.99%+ availability. Dropbox\'s 2024-2025 work focused on storage efficiency in the immutable blob store.',
   },
   kafkaController: {
     description:

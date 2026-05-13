@@ -206,6 +206,95 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 
 ---
 
+## 14. Chunking + content-defined chunking (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 models uploads as ops/sec at 100 chunks/sec without specifying chunk size. The canvas shows Upload Clients writing directly to Blob Storage (presigned bypass) but doesn't model the per-event chunking inside the client.
+
+**What we say**: 100 chunks/sec hit the blob layer. Each chunk is an opaque write.
+
+**What's actually going on in production**: The client-side Watcher detects a file change; the Chunker splits the file into 4MB blocks (Dropbox industry default; some sources say 2-10MB); each chunk gets a content hash (SHA-256) as its ID. The *naïve* approach uses fixed boundaries (split every 4MB) — but inserting a byte at the start of a file would shift every boundary, invalidating every chunk's hash. **Content-defined chunking (CDC)** uses a rolling hash (e.g. Rabin fingerprint) to pick boundaries based on byte patterns, so small edits only invalidate the chunks around the edit. CDC is what makes "change one byte → upload one chunk" rather than "upload the whole file."
+
+**Why we abstract**: Our sim is rate-based, not byte-based. Modeling chunking would require per-event state (which chunks are new vs already-uploaded). Off the canvas.
+
+**What a student should know**: In an interview, say *4MB chunks* and mention *content-defined chunking* with rolling hashes. Without CDC, inserting bytes mid-file cascades — naïve fixed-boundary chunking would be a wasteful resync pattern. CDC is what makes Dropbox edits feel fast.
+
+---
+
+## 15. Hash-based deduplication (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 doesn't model deduplication. Each chunk is treated as a unique write to Blob Storage.
+
+**What we say**: 100 chunks/sec write to Blob Storage.
+
+**What's actually going on in production**: Each chunk has a SHA-256 content hash as its key. Before writing, the client (or upload service) checks "does this hash already exist in Blob Storage?" If yes, just add a reference in the metadata DB ("this file uses chunk X"); no bytes uploaded. Cross-user dedup means if two users have the same 4MB block (a common PDF, a shared photo, a popular installer), it's stored ONCE in the blob layer and ref-counted. Production dedup ratios at Dropbox/GDrive are typically 30-70% — saving petabytes of storage at exabyte scale.
+
+**Why we abstract**: Dedup is content-addressed storage with reference counting, which requires per-chunk state the simulator doesn't track. Off the canvas.
+
+**What a student should know**: Dedup is what makes the economics work. Without it, every user storing a shared 4GB game install would consume 4GB × N users — petabytes of waste. With it, storage cost scales with *unique content*, not with users. Mention SHA-256 + reference counting in an interview.
+
+---
+
+## 16. Presigned URLs (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 models the *topology* of presigned-URL bypass — Upload Clients have a direct edge to Blob Storage, skipping the backend entirely. The signed-URL mechanism itself (signing, expiration, scope) is not modeled.
+
+**What we say**: Upload Clients wire directly to Blob Storage. Backend bandwidth is sized for ops/sec, not GB/sec.
+
+**What's actually going on in production**: The client first hits the Upload Service asking "where should I write?" Upload Service generates a short-lived (typically 5 minutes) cryptographically-signed URL that grants write access to a specific S3 object key. Client uses the URL to PUT directly to S3; the bytes never touch the backend. After upload, S3 emits an event ("object created") that the backend listens to → triggers metadata DB updates + sync notifications. The URL's signature includes user identity, bucket, key, and expiry — so it can't be reused for unauthorized writes.
+
+**Why we abstract**: Signing + expiration + access-control logic is per-request crypto, not flow modeling. The architectural pattern (direct edge bypassing backend) is on canvas; the mechanism is in this entry.
+
+**What a student should know**: Presigned URLs are the load-bearing optimization for any cloud storage system. Mention: short TTL (5 min), per-object scope, signature includes user + bucket + key + expiry. Without presigned URLs, backend bandwidth costs would be prohibitive at scale. The signed-URL pattern is also used for downloads (`GET` via presigned CloudFront URL) for access control.
+
+---
+
+## 17. WebSocket + long-polling sync hybrid (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 models sync fan-out as a `pubsub: true` Queue feeding multiple consumer-group workers — same mechanic as Lesson 17 (Kafka). The actual delivery protocol (WebSocket push, long polling, periodic polling) is not modeled.
+
+**What we say**: Chunk-landed events fan out via Queue to multiple consumer groups (each representing a device type).
+
+**What's actually going on in production**: Real sync uses a hybrid:
+- **WebSocket** for connected clients — server pushes notifications instantly. Low latency, but requires the client to be online + connected.
+- **Long polling** for the long tail — client polls `/long_poll/file-changes` with a long timeout (60s+); server holds the connection open and responds when changes happen (or the timeout fires). Fallback when WebSockets aren't available (corporate firewalls, mobile background, etc).
+- **Periodic full sync** — every N minutes, the client asks "what changed since I last checked?" for safety. Catches anything missed by the push channels.
+
+Per-client response queues (DoublePointer's framing) ensure offline clients receive missed updates on reconnect.
+
+**Why we abstract**: Our sim doesn't model protocols (WebSocket vs polling vs push) or client connection state. Off the canvas.
+
+**What a student should know**: The senior 2026 answer mentions WebSocket primary + long-polling fallback + periodic full sync as defense in depth. Don't say "just WebSocket" — that breaks for the long tail of offline / firewalled clients.
+
+---
+
+## 18. Conflict resolution — last-write-wins / conflicted copy (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 doesn't model conflicts. Each upload completes atomically; the metadata DB records the new version.
+
+**What we say**: Uploads are linearizable. No concurrent-edit story on canvas.
+
+**What's actually going on in production**: Two devices editing the same file at the same time will produce two divergent histories. Dropbox / GDrive resolve this with **last-write-wins on the file** (whichever upload completes second is the canonical version) PLUS **creating a "conflicted copy"** — `report (Alice's conflicted copy 2025-04-12).docx` — so the loser's edits aren't lost, just renamed. More sophisticated systems (Google Docs) use **operational transforms** or **CRDTs** for character-level merge, but Dropbox-style chunk-based sync can't merge at sub-file granularity.
+
+**Why we abstract**: Conflict resolution requires per-event vector clocks or timestamps. Off the canvas.
+
+**What a student should know**: Mention last-write-wins + conflicted-copy as Dropbox's pragmatic answer. For real-time collaborative editing, OT (Google Docs) or CRDTs (Figma, Notion) are the alternatives — different problem class. Conflict resolution is also where multi-region replication adds complexity (concurrent writes in two regions need to merge).
+
+---
+
+## 19. Magic Pocket — production reality vs interview answer (Lesson 18 — Dropbox)
+
+**Where it shows up**: Lesson 18 has a decorative `magicPocket` marker near the Blob Storage cluster. The interview-canonical answer says "S3"; the Dropbox-production-reality answer says "Magic Pocket."
+
+**What we say**: Blob Storage is shown as a generic cluster with a Magic Pocket decorative label. The interview-correct simplification is "use S3" — and indeed most Dropbox-style designs in a 45-minute slot just say S3.
+
+**What's actually going on in production**: Dropbox built Magic Pocket as a custom exabyte-scale immutable blob store and moved 90%+ of user data off AWS S3 over 2015-2016 (the "Infrastructure Optimization" project). Why: at exabyte scale, S3's costs become enormous; building custom saves hundreds of millions over time. Magic Pocket runs on **SMR (Shingled Magnetic Recording) HDDs** for density (SMR sacrifices random-write performance for ~25% more capacity per platter — fine for immutable blobs). Designed for **12+ nines of durability** and **99.99%+ availability** via aggressive erasure coding + cross-rack redundancy. 2024-2025 work focused on overhead reduction in the immutable blob store.
+
+**Why we abstract**: Magic Pocket is *a different system design problem*. The interview answer for "Design Dropbox" is "use S3"; the answer for "How does Magic Pocket work?" is its own 45-minute discussion.
+
+**What a student should know**: In a Dropbox interview, the basic answer is "blob storage backed by S3." The *senior* answer name-drops Magic Pocket as the production reality: "S3 for the interview answer, but Dropbox actually built their own — Magic Pocket — once they hit ~petabyte scale, because S3 economics break down. They run it on SMR drives in their own data centers." This signals you know the production story, not just the textbook one. (Same flavor as mentioning that Kafka 4.0 removed Zookeeper or that zero-copy is disabled by TLS.)
+
+---
+
 ## How to add an entry
 
 When you simplify a real-world concept for pedagogical clarity:

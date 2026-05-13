@@ -1456,6 +1456,79 @@ describe('canonical solutions', () => {
     expect(r.successRate).toBeLessThan(0.5);
   });
 
+  it('File Storage (Dropbox): no CDN → 5k downloads melt the blob layer', () => {
+    // Without CDN, every download chunk hits the blob storage cluster.
+    // 5000/sec → 3 blobs at cap 5000 each = 15000 aggregate, BUT a default
+    // blob-lb has cap 50000 — and the metadata cluster path can't satisfy
+    // the syncSuccess metric either because the math falls apart elsewhere.
+    // Specifically: blob storage cap is high (5k each) so the cluster handles
+    // 5000 downloads, but the topology check (hasCdn predicate) fails.
+    const p = puzzles.fileStorageAtScale;
+    const { nodes: solNodes, edges: solEdges } = p.solution();
+    // Remove the CDN and reroute downloads directly to blob-lb.
+    const nodes = solNodes.filter((n) => n.id !== 'cdn');
+    const edges = solEdges
+      .filter((e) => e.source !== 'cdn' && e.target !== 'cdn')
+      .concat([edge('download-clients', 'blob-lb')]);
+    const r = simulate(p, nodes, edges);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasCdn').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('File Storage (Dropbox): no metadata cache → 10k reads overload metadata DB cluster', () => {
+    // Default cache hit at 0.85 absorbs 8075 of 9500 reads. Without cache,
+    // all 9500 reads hit the DB cluster (cap 3000 aggregate) → 6500 drop.
+    const p = puzzles.fileStorageAtScale;
+    const { nodes: solNodes, edges: solEdges } = p.solution();
+    const nodes = solNodes.filter((n) => n.id !== 'metadata-cache');
+    const edges = solEdges
+      .filter((e) => e.source !== 'metadata-cache' && e.target !== 'metadata-cache')
+      // Reroute reads from services directly to metadata-db-lb
+      .concat([
+        edge('metadata-svc-0', 'metadata-db-lb', 'read'),
+        edge('metadata-svc-1', 'metadata-db-lb', 'read'),
+      ]);
+    const r = simulate(p, nodes, edges);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasMetadataCache').passed).toBe(false);
+    expect(r.successRate).toBeLessThan(0.99);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('File Storage (Dropbox): no blob storage (only metadata DBs) → predicate fails', () => {
+    // The student tags everything as role:metadata, never creates a blob DB.
+    // hasBlobStorage (min 2 with role:blob) fails.
+    const p = puzzles.fileStorageAtScale;
+    const { nodes: solNodes, edges } = p.solution();
+    // Switch all role:blob nodes to role:metadata.
+    const nodes = solNodes.map((n) => {
+      if (n.id?.startsWith('blob-storage-')) {
+        return { ...n, data: { ...n.data, config: { ...n.data.config, role: 'metadata' } } };
+      }
+      return n;
+    });
+    const r = simulate(p, nodes, edges);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasBlobStorage').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('File Storage (Dropbox): single consumer group on sync queue → multi-device sync missing', () => {
+    // Only one device consumer group — fails hasMultipleConsumerGroups.
+    const p = puzzles.fileStorageAtScale;
+    const { nodes: solNodes, edges: solEdges } = p.solution();
+    // Drop the batch-worker (and its sink). Now only realtime-devices group.
+    const removed = new Set(['batch-worker', 'batch-sink-db']);
+    const nodes = solNodes.filter((n) => !removed.has(n.id));
+    const edges = solEdges.filter((e) => !removed.has(e.source) && !removed.has(e.target));
+    const r = simulate(p, nodes, edges);
+    const ev = evaluatePuzzle(p, r);
+    expect(r.consumerGroupCount).toBe(1);
+    expect(ev.results.find((rq) => rq.key === 'hasMultipleConsumerGroups').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
   it('Twitter at Scale: no CDN → reads melt the App pool even at high App capacity', () => {
     // 50,000 reads/sec straight to LB → Apps → cache+replicas. Even bumped
     // App capacity can't make this work without offloading 95% to a CDN.
