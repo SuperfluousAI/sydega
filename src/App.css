@@ -42,6 +42,16 @@
   max-width: 60ch;
 }
 
+/* One-line slug under the lesson title — punchy descriptor, not the
+   full blurb. Long blurb + sources live in the right-side LessonPanel. */
+.puzzle-slug {
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 80ch;
+}
+
 .puzzle-targets {
   font-size: 13px;
   color: var(--text-dim);
@@ -124,6 +134,110 @@
   flex-direction: column;
   gap: 2px;
   min-width: 260px;
+}
+/* Scroll affordance only kicks in once a sim has run — when there's just
+   the "Press Run" placeholder, no cap, no fade, no scrollbar gutter so
+   the placeholder text isn't visually crowded. */
+.puzzle-results-wrap {
+  position: relative;
+  min-width: 260px;
+  /* Fixed height (not max-height) so the puzzle-bar never resizes when
+     Run produces a long requirements list. The empty / Press-Run state
+     reserves the same space; trade a little dead space for stable
+     layout — the canvas + side panels never jump down on Run. */
+  height: 220px;
+}
+.puzzle-results {
+  height: 100%;
+  box-sizing: border-box;
+}
+.puzzle-results--has-data {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 6px;
+  /* Top + bottom padding leaves a small gap between the scroll-hint bars
+     (positioned overlays) and the visible content. Without it, the text
+     at the top/bottom edge sits right against the bar. */
+  padding-top: 8px;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-dim) transparent;
+  border-radius: 4px;
+}
+/* Explicit "scroll for more ▼" bar shown only when there's actual overflow
+   AND the user isn't at the bottom (PuzzleBar.jsx toggles via ResizeObserver
+   + scroll event). Sits as a positioned overlay so it stays anchored to
+   the bottom regardless of scroll position. */
+.puzzle-results-scroll-hint {
+  position: absolute;
+  left: 0;
+  right: 6px;
+  bottom: 0;
+  height: 22px;
+  padding: 4px 0;
+  background: linear-gradient(to top, var(--bg-2) 60%, rgba(0, 0, 0, 0));
+  color: var(--text-dim);
+  font-size: 11px;
+  pointer-events: none;
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  z-index: 2;
+}
+/* Pin the two arrows at the 25% and 75% horizontal markers of the bar,
+   centered on those points via a -50% translate. */
+.puzzle-results-scroll-hint .scroll-hint-arrow {
+  position: absolute;
+  bottom: 4px;
+  transform: translateX(-50%);
+  line-height: 1;
+}
+.puzzle-results-scroll-hint .scroll-hint-arrow:nth-child(1) { left: 25%; }
+.puzzle-results-scroll-hint .scroll-hint-arrow:nth-child(2) { left: 75%; }
+/* Top-pinned variant for the "scroll up for more" hint. Same bar, just
+   anchored to the top edge with the gradient inverted. */
+.puzzle-results-scroll-hint--up {
+  top: 0;
+  bottom: auto;
+  background: linear-gradient(to bottom, var(--bg-2) 60%, rgba(0, 0, 0, 0));
+  border-radius: 4px 4px 0 0;
+}
+.puzzle-results-scroll-hint--up .scroll-hint-arrow {
+  animation-name: scroll-hint-bounce-up;
+  /* Anchor the up-variant to the top edge rather than the bottom. */
+  bottom: auto;
+  top: 4px;
+}
+@keyframes scroll-hint-bounce-up {
+  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.7; }
+  50% { transform: translateX(-50%) translateY(-2px); opacity: 1; }
+}
+.scroll-hint-arrow {
+  animation: scroll-hint-bounce 1.4s ease-in-out infinite;
+}
+/* Offset the second arrow's animation so the two don't bounce in unison;
+   reads as a soft alternating cadence. */
+.scroll-hint-arrow:nth-child(2) {
+  animation-delay: 0.4s;
+}
+/* Animations preserve the -50% X translate used for horizontal centering;
+   only the Y component animates. */
+@keyframes scroll-hint-bounce {
+  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.7; }
+  50% { transform: translateX(-50%) translateY(2px); opacity: 1; }
+}
+.puzzle-results--has-data::-webkit-scrollbar {
+  width: 10px;
+}
+.puzzle-results--has-data::-webkit-scrollbar-track {
+  background: transparent;
+}
+.puzzle-results--has-data::-webkit-scrollbar-thumb {
+  background: var(--text-dim);
+  border-radius: 5px;
+  border: 2px solid var(--bg-2);
+}
+.puzzle-results--has-data::-webkit-scrollbar-thumb:hover {
+  background: var(--text);
 }
 
 .result-row {
@@ -221,11 +335,96 @@
 }
 
 /* Body layout */
+/* ── Resize handles ─────────────────────────────────────────────────────
+   Thin strips on the edges of the chrome panes; mousedown → drag along
+   the appropriate axis to resize. Color picks up on hover so the
+   affordance is discoverable without being noisy by default. */
+.resize-handle {
+  position: absolute;
+  z-index: 25;
+  background: transparent;
+  transition: background 120ms ease-in-out;
+}
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--text-dim);
+}
+.resize-handle-bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+.resize-handle-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.resize-handle-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+/* Wraps the top puzzle bar so its height can be inline-styled and a
+   vertical resize handle can sit at its bottom edge. */
+.puzzle-bar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+.puzzle-bar-wrap > .puzzle-bar {
+  height: 100%;
+  border-bottom: 0; /* the wrap owns the divider now */
+}
+/* Wraps the palette so a horizontal resize handle can sit at its right edge
+   without disturbing the grid layout. */
+.palette-wrap {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.palette-wrap > .palette {
+  flex: 1;
+  min-height: 0;
+}
+
 .app-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 220px 1fr 260px;
+  grid-template-columns: 220px 1fr 320px;
   min-height: 0;
+}
+/* When the palette is collapsed it shrinks to a slim strip that just holds
+   the expand button. The Canvas claims the freed horizontal space. */
+.app-body[data-palette-collapsed='true'] {
+  grid-template-columns: 36px 1fr 320px;
+}
+
+/* The right column hosts two stacked panels: PropertyPanel (component-
+   specific, top) and LessonPanel (static lesson reading, bottom). The
+   stack itself is the grid cell; each panel scrolls independently.
+   When LessonPanel is collapsed, PropertyPanel takes nearly all the
+   height and LessonPanel shrinks to just its header row. */
+.app-right-stack {
+  display: grid;
+  grid-template-rows: minmax(180px, 40%) 1fr;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+.app-right-stack[data-lesson-collapsed='true'] {
+  grid-template-rows: 1fr auto;
+}
+.app-right-stack > .property-panel {
+  border-left: 0;
+  border-bottom: 1px solid var(--border);
 }
 
 /* Info pane — pedagogical context for the selected component. Rendered as
@@ -562,6 +761,19 @@
      as "moving away," not as instant teleport. */
   transition: left 220ms ease, top 220ms ease,
               background 120ms, border-color 120ms, transform 120ms;
+  /* Bubble pop-in on mount: a quick scale-up past 100%, a tiny rebound,
+     and settle back to 100%. Reads as a "boop" appearance rather than
+     a hard cut. After the 360ms animation completes, the .hot hover
+     transform takes over normally. */
+  animation: trash-bubble-pop 360ms ease-out;
+  transform-origin: center;
+}
+@keyframes trash-bubble-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  55%  { transform: scale(1.15); opacity: 1; }
+  72%  { transform: scale(0.95); }
+  88%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
 }
 .canvas-trash.hot {
   background: rgba(220, 38, 38, 0.85);
@@ -621,6 +833,106 @@
 .reading-inline p:last-child {
   margin-bottom: 0;
 }
+/* LessonPanel — static lesson reading on the right, below PropertyPanel.
+   Independent scroll so long lesson copy doesn't push other panels around. */
+.lesson-panel {
+  background: var(--bg-2);
+  padding: 14px 16px;
+  overflow-y: auto;
+  min-height: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.lesson-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.lesson-panel-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.lesson-panel-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lesson-panel-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* Palette header with the collapse toggle on the right. Same visual
+   pattern as the LessonPanel toggle so the affordance is consistent. */
+.palette-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.palette-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.palette-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.palette-collapsed {
+  padding: 8px 4px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.palette-toggle-collapsed {
+  margin-top: 6px;
+}
+/* Collapsed state: no body, no bottom margin on header, smaller padding. */
+.lesson-panel-collapsed {
+  padding: 8px 14px;
+}
+.lesson-panel-collapsed .lesson-panel-header {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.lesson-panel-blurb {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lesson-panel-reading p {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+}
+.lesson-panel-reading p:last-child {
+  margin-bottom: 10px;
+}
+
 .reading-sources {
   margin-top: 14px;
   padding-top: 10px;

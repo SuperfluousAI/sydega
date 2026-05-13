@@ -30,7 +30,13 @@ function allPaletteEntries() {
   return out;
 }
 
-export default function Palette({ puzzle, onSwitchPuzzle, completedPuzzleIds = [] }) {
+export default function Palette({
+  puzzle,
+  onSwitchPuzzle,
+  completedPuzzleIds = [],
+  collapsed = false,
+  onToggleCollapse,
+}) {
   // Per-type drag-time flags. Today only "prepopulate" exists, for Computer.
   // If a future component needs its own flag, generalize this.
   const [prepopulateComputer, setPrepopulateComputer] = useState(false);
@@ -54,9 +60,38 @@ export default function Palette({ puzzle, onSwitchPuzzle, completedPuzzleIds = [
   const allowedKeys = new Set(puzzle.allowedComponents.map(entryKey));
   const extraEntries = allPaletteEntries().filter((e) => !allowedKeys.has(entryKey(e)));
 
+  if (collapsed) {
+    return (
+      <aside className="palette palette-collapsed">
+        <button
+          type="button"
+          className="palette-toggle palette-toggle-collapsed"
+          onClick={onToggleCollapse}
+          aria-expanded="false"
+          title="Expand lessons + components"
+        >
+          ▸
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="palette">
-      <h2 className="panel-title">Lessons</h2>
+      <div className="palette-header">
+        <h2 className="panel-title" style={{ margin: 0 }}>Lessons</h2>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            className="palette-toggle"
+            onClick={onToggleCollapse}
+            aria-expanded="true"
+            title="Collapse lessons + components"
+          >
+            ◂
+          </button>
+        )}
+      </div>
       <div className="lessons-list">
         {puzzleOrder.map((pid) => {
           const p = puzzles[pid];

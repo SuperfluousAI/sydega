@@ -1,93 +1,55 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render } from '@testing-library/react';
 import PuzzleBar from './PuzzleBar.jsx';
 
-const PUZZLE_WITH_BACKGROUND = {
+const PUZZLE_WITH_BLURB = {
   order: 2,
   title: 'On the Home Network',
-  blurb: 'A short slug shown under the title.',
+  blurb: 'A short slug shown under the title. More detail after the first sentence.',
   kind: 'composition',
-  background: [
-    'First paragraph of the full reading.',
-    'Second paragraph — provides more depth.',
-  ],
-  requirements: [],
-};
-const PUZZLE_WITHOUT_BACKGROUND = {
-  order: 3,
-  title: 'Point a Domain',
-  blurb: 'No reading available.',
-  kind: 'connectivity',
   requirements: [],
 };
 
-function setup(props = {}) {
+const PUZZLE_WITH_SLUG = {
+  order: 14,
+  title: 'Stream Processing at Scale',
+  slug: 'Explicit one-liner from the puzzle definition.',
+  blurb: 'Long blurb that should not appear under the title when slug is set.',
+  kind: 'flow',
+  requirements: [],
+};
+
+function setup(puzzle, props = {}) {
   return render(
     <PuzzleBar
-      puzzle={PUZZLE_WITH_BACKGROUND}
+      puzzle={puzzle}
       simResult={null}
       evaluation={{ passed: false, results: [] }}
       onRun={() => {}}
       onReset={() => {}}
-      readingExpanded={false}
-      onToggleReading={() => {}}
       {...props}
     />
   );
 }
 
-describe('PuzzleBar inline reading expander', () => {
-  it('renders the slug (blurb) under the title', () => {
-    const { container } = setup();
-    expect(container.textContent).toContain(PUZZLE_WITH_BACKGROUND.blurb);
+describe('PuzzleBar slug rendering', () => {
+  it('uses the first sentence of the blurb as a slug under the title', () => {
+    const { container } = setup(PUZZLE_WITH_BLURB);
+    const slug = container.querySelector('.puzzle-slug');
+    expect(slug).not.toBeNull();
+    expect(slug.textContent).toMatch(/A short slug shown under the title\./);
+    expect(slug.textContent).not.toMatch(/More detail/);
   });
 
-  it('shows a toggle button when the puzzle has background paragraphs', () => {
-    const { container } = setup();
-    const btn = container.querySelector('.reading-toggle');
-    expect(btn).not.toBeNull();
-    expect(btn.textContent).toMatch(/Read full lesson/);
+  it('prefers an explicit `slug` over the blurb when set', () => {
+    const { container } = setup(PUZZLE_WITH_SLUG);
+    const slug = container.querySelector('.puzzle-slug');
+    expect(slug.textContent).toBe('Explicit one-liner from the puzzle definition.');
   });
 
-  it('does NOT show the toggle when there is no background', () => {
-    const { container } = render(
-      <PuzzleBar
-        puzzle={PUZZLE_WITHOUT_BACKGROUND}
-        simResult={null}
-        evaluation={{ passed: false, results: [] }}
-        onRun={() => {}}
-        onReset={() => {}}
-        readingExpanded={false}
-        onToggleReading={() => {}}
-      />
-    );
-    expect(container.querySelector('.reading-toggle')).toBeNull();
-  });
-
-  it('does NOT render the inline reading when collapsed', () => {
-    const { container } = setup({ readingExpanded: false });
-    expect(container.querySelector('.reading-inline')).toBeNull();
-    expect(container.textContent).not.toContain('First paragraph of the full reading.');
-  });
-
-  it('renders the full reading paragraphs when expanded', () => {
-    const { container } = setup({ readingExpanded: true });
-    const inline = container.querySelector('.reading-inline');
-    expect(inline).not.toBeNull();
-    for (const para of PUZZLE_WITH_BACKGROUND.background) {
-      expect(inline.textContent).toContain(para);
-    }
-  });
-
-  it('toggle button shows "Hide" copy when expanded', () => {
-    const { container } = setup({ readingExpanded: true });
-    expect(container.querySelector('.reading-toggle').textContent).toMatch(/Hide full lesson/);
-  });
-
-  it('clicking the toggle invokes onToggleReading', () => {
-    const onToggleReading = vi.fn();
-    const { container } = setup({ onToggleReading });
-    fireEvent.click(container.querySelector('.reading-toggle'));
-    expect(onToggleReading).toHaveBeenCalledOnce();
+  it('does not render the blurb in the puzzle-info area when an explicit slug is set', () => {
+    const { container } = setup(PUZZLE_WITH_SLUG);
+    const info = container.querySelector('.puzzle-info');
+    expect(info.textContent).not.toContain('Long blurb');
   });
 });

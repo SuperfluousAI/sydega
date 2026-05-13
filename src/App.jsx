@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Canvas from './components/Canvas.jsx';
 import Palette from './components/Palette.jsx';
 import PropertyPanel from './components/PropertyPanel.jsx';
+import LessonPanel from './components/LessonPanel.jsx';
 import PuzzleBar from './components/PuzzleBar.jsx';
+import ResizeHandle from './components/ResizeHandle.jsx';
 
 import { simulate } from './lib/simulator.js';
 import { reflowContainers } from './lib/reflow.js';
@@ -102,26 +104,6 @@ export default function App() {
     }, 280);
   }, []);
 
-  const [readingShownIds, setReadingShownIds] = useState(() => {
-    try {
-      const raw = localStorage.getItem('sdg-reading-shown');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [readingExpanded, setReadingExpanded] = useState(() => {
-    const hasBackground = Array.isArray(puzzle.background) && puzzle.background.length > 0;
-    if (!hasBackground) return false;
-    try {
-      const raw = localStorage.getItem('sdg-reading-shown');
-      const seen = raw ? JSON.parse(raw) : [];
-      return !seen.includes(puzzle.id);
-    } catch {
-      return true;
-    }
-  });
-
   useEffect(() => {
     try {
       localStorage.setItem('sdg-completed', JSON.stringify(completedPuzzleIds));
@@ -130,21 +112,62 @@ export default function App() {
     }
   }, [completedPuzzleIds]);
 
+  // LessonPanel + Palette collapse state — both persisted to localStorage so
+  // the user's preference survives reloads. Default expanded so first-time
+  // visitors see the lesson + palette content.
+  const [lessonCollapsed, setLessonCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('sdg-lesson-collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
   useEffect(() => {
     try {
-      localStorage.setItem('sdg-reading-shown', JSON.stringify(readingShownIds));
+      localStorage.setItem('sdg-lesson-collapsed', lessonCollapsed ? '1' : '0');
     } catch {
       // ignore
     }
-  }, [readingShownIds]);
-
-  // When the reading panel opens, mark this puzzle as having been shown so
-  // subsequent visits skip the auto-open.
-  useEffect(() => {
-    if (readingExpanded && !readingShownIds.includes(puzzle.id)) {
-      setReadingShownIds((ids) => [...ids, puzzle.id]);
+  }, [lessonCollapsed]);
+  const [paletteCollapsed, setPaletteCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('sdg-palette-collapsed') === '1';
+    } catch {
+      return false;
     }
-  }, [readingExpanded, readingShownIds, puzzle.id]);
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('sdg-palette-collapsed', paletteCollapsed ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [paletteCollapsed]);
+
+  // Drag-to-resize sizes for the three layout chrome regions. Each is
+  // persisted to localStorage so a user's preferred layout sticks across
+  // reloads. Clamping is enforced inside the resize handles.
+  const loadNum = (key, fallback) => {
+    try {
+      const raw = localStorage.getItem(key);
+      const n = raw != null ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const [topPaneHeight, setTopPaneHeight] = useState(() => loadNum('sdg-top-pane-height', 280));
+  const [paletteWidth, setPaletteWidth] = useState(() => loadNum('sdg-palette-width', 220));
+  const [rightStackWidth, setRightStackWidth] = useState(() => loadNum('sdg-right-stack-width', 320));
+  useEffect(() => {
+    try { localStorage.setItem('sdg-top-pane-height', String(topPaneHeight)); } catch { /* ignore */ }
+  }, [topPaneHeight]);
+  useEffect(() => {
+    try { localStorage.setItem('sdg-palette-width', String(paletteWidth)); } catch { /* ignore */ }
+  }, [paletteWidth]);
+  useEffect(() => {
+    try { localStorage.setItem('sdg-right-stack-width', String(rightStackWidth)); } catch { /* ignore */ }
+  }, [rightStackWidth]);
 
   // Containers grow their actual width/height to fit children on the
   // right/bottom side. Never shifts position — left/top growth is purely
@@ -375,10 +398,8 @@ export default function App() {
       setSimResult(null);
       // Puzzle switch is a context change, not an edit — clear undo history.
       setHistory({ past: [], future: [] });
-      const hasBackground = Array.isArray(next.background) && next.background.length > 0;
-      setReadingExpanded(hasBackground && !readingShownIds.includes(pid));
     },
-    [activePuzzleId, readingShownIds]
+    [activePuzzleId]
   );
 
   // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Shift+Cmd/Ctrl+Z (or Cmd/Ctrl+Y) = redo.
@@ -409,25 +430,53 @@ export default function App() {
 
   return (
     <div className="app">
-      <PuzzleBar
-        puzzle={puzzle}
-        simResult={simResult}
-        evaluation={evaluation}
-        onRun={handleRun}
-        onReset={handleReset}
-        onShowSolution={handleShowSolution}
-        onUndo={handleUndo}
-        canUndo={history.past.length > 0}
-        readingExpanded={readingExpanded}
-        onToggleReading={() => setReadingExpanded((v) => !v)}
-        celebrationKey={celebrationKey}
-      />
-      <div className="app-body">
-        <Palette
+      <div className="puzzle-bar-wrap" style={{ height: topPaneHeight }}>
+        <PuzzleBar
           puzzle={puzzle}
-          onSwitchPuzzle={handleSwitchPuzzle}
-          completedPuzzleIds={completedPuzzleIds}
+          simResult={simResult}
+          evaluation={evaluation}
+          onRun={handleRun}
+          onReset={handleReset}
+          onShowSolution={handleShowSolution}
+          onUndo={handleUndo}
+          canUndo={history.past.length > 0}
+          celebrationKey={celebrationKey}
         />
+        <ResizeHandle
+          orientation="vertical"
+          side="bottom"
+          getCurrent={() => topPaneHeight}
+          onChange={setTopPaneHeight}
+          min={120}
+          max={520}
+        />
+      </div>
+      <div
+        className="app-body"
+        data-palette-collapsed={paletteCollapsed ? 'true' : 'false'}
+        style={{
+          gridTemplateColumns: `${paletteCollapsed ? 36 : paletteWidth}px 1fr ${rightStackWidth}px`,
+        }}
+      >
+        <div className="palette-wrap">
+          <Palette
+            puzzle={puzzle}
+            onSwitchPuzzle={handleSwitchPuzzle}
+            completedPuzzleIds={completedPuzzleIds}
+            collapsed={paletteCollapsed}
+            onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
+          />
+          {!paletteCollapsed && (
+            <ResizeHandle
+              orientation="horizontal"
+              side="right"
+              getCurrent={() => paletteWidth}
+              onChange={setPaletteWidth}
+              min={160}
+              max={420}
+            />
+          )}
+        </div>
         <Canvas
           nodes={displayNodes}
           setNodes={setNodes}
@@ -442,12 +491,27 @@ export default function App() {
           onDeleteNode={handleDeleteNode}
           selectedNode={selectedNode}
         />
-        <PropertyPanel
-          node={selectedNode}
-          onChange={handleConfigChange}
-          onDelete={handleDeleteNode}
-          onToggleFailed={handleToggleFailed}
-        />
+        <div className="app-right-stack" data-lesson-collapsed={lessonCollapsed ? 'true' : 'false'}>
+          <ResizeHandle
+            orientation="horizontal"
+            side="left"
+            getCurrent={() => rightStackWidth}
+            onChange={setRightStackWidth}
+            min={240}
+            max={640}
+          />
+          <PropertyPanel
+            node={selectedNode}
+            onChange={handleConfigChange}
+            onDelete={handleDeleteNode}
+            onToggleFailed={handleToggleFailed}
+          />
+          <LessonPanel
+            puzzle={puzzle}
+            collapsed={lessonCollapsed}
+            onToggleCollapse={() => setLessonCollapsed((v) => !v)}
+          />
+        </div>
       </div>
     </div>
   );

@@ -2015,3 +2015,125 @@ No new tests added this Part. Visual changes don't trip the test suite (which is
 - **KRaft Controller floating with no visual relationship**: same issue replicas had. If we want to be consistent, draw a dashed line from kraft to each broker region's anchor node. Skipping unless asked.
 - **Test for FloatingEdge's replication branch**: the existing FloatingEdge.test.js tests the endpoint click-zone rule. A new test for the dashed/muted style on `kind: 'replication'` would lock that down. Logged.
 
+## Session 1 Part 20 — 2026-05-13: UI polish pass — slim top bar, static right-side LessonPanel, collapsible left/right chrome, scrollable results column with arrow hints, drag-to-resize all three panes, wiggly trash bubble pop-in. Test count 329 → 335. Tag pt19 in the middle of this Part; tag pt20 at the end.
+
+### What this Part is
+
+Pure UX polish driven by play-test. Lesson 14 was already at 10/10 against the research (Parts 17-19); this Part is the layout chrome catching up to the dense content. Eight discrete issues, each surfaced by operator while running the puzzle in the browser. The pause-to-play cadence rule ([[feedback-pause-to-play-cadence]]) paid for itself again — none of these would have surfaced from headless tests.
+
+Calibration notes during the Part are below — I got the layout intent wrong twice and was corrected.
+
+### Wrong turn #1: shortened the blurb instead of redesigning
+
+Operator: *"lesson 14 - the top text has too much real estate. it's taking up the canvas."*
+
+I shortened the blurb from ~1320 chars to ~510. Operator: *"i didn't want you to shorten anything - i wanted you to redesign the text layout. maybe the full lesson can be on the right and an actively clicked component can still have its section there."*
+
+The intent was layout, not content. The fix: move the lesson content out of the top bar entirely, into a right-side panel. Restored the full blurb, redesigned the layout.
+
+### Wrong turn #2: tried to bundle ComponentInfo into the right panel
+
+After lifting the lesson reading to the right, I also moved the canvas's top-overlay ComponentInfo into the right panel. Operator: *"i liked the previous version where info on the component was at the top of the canvas. you're putting it on the right. do not do that."*
+
+The correct split: ComponentInfo stays in the canvas top overlay (where the player is looking); the right-side panel is for the *lesson* (static reading) AND the editable PropertyPanel (when a node is selected). Reverted ComponentInfo to its canvas position.
+
+The pattern from both calibrations: I default to "merge similar surfaces" when the operator wants surfaces kept apart. Logged.
+
+### The final layout
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Lesson 14 pill + Title                          [Run] [Undo] ... │ ▼│   ← top bar (resizable)
+│ short slug (first sentence of blurb)        sim metrics + 9 reqs│scr│
+│                                             with ▼▼/▲▲ hint bars│ ▲│
+├──────────┬───────────────────────────────────────────┬──────────────┤
+│ Lessons  │  ┌── ComponentInfo overlay ─────────────┐  │ PropertyPanel│
+│ • L1     │  │ What it is / How to use / etc.      │  │ (selected    │
+│ • L2     │  └─────────────────────────────────────────┘  │  component   │
+│ • L14◂   │                                         │  │  ed/props)   │
+│          │            CANVAS                       │  │              │
+│ Components│         (44 nodes for L14)             │ │ ──────────── │
+│ • Client │                                         │  │ LessonPanel  │
+│ • LB     │                                         │  │ blurb + 7    │
+│ • Queue  │                                         │  │ paragraphs + │
+│   ...    │                                         │  │ 16 sources ▾ │
+└──────────┴───────────────────────────────────────────┴──────────────┘
+  ↑                                                  ↑      ↑
+  resize ←→                                          resize ←→
+```
+
+Slim top, dense right column (PropertyPanel above LessonPanel), Lesson list + Components on the left, Canvas in the middle. Every chrome region is collapsible AND drag-resizable, with sizes persisted to localStorage.
+
+### What changed (in order)
+
+**1. Slug under title + LessonPanel on the right.** PuzzleBar.jsx lost its inline blurb, reading toggle, and inline reading expand. Added a short slug below the title (uses `puzzle.slug` if set, falls back to the first sentence of `puzzle.blurb` via a tiny regex helper). All the meaty content moved to a new `LessonPanel.jsx` component on the right: title + blurb + background paragraphs + sources links. Static, no toggle on the content itself. Pairs with `PropertyPanel` in the right column (stacked vertically inside `.app-right-stack`).
+
+**2. ComponentInfo restored to canvas top overlay.** Where it was. Where the operator wanted it. Operator's UX intuition.
+
+**3. LessonPanel collapsible (▾ / ▸).** A toggle button in the header retracts the panel to just its title row, freeing vertical space for PropertyPanel above. `lessonCollapsed` state lives in App, applied via `data-lesson-collapsed` on `.app-right-stack` which changes `grid-template-rows`. Persists to `sdg-lesson-collapsed` in localStorage.
+
+**4. Palette collapsible (◂ / ▸).** Same pattern as LessonPanel but horizontal. When collapsed the palette shrinks from default width to a 36px strip with only the expand button visible; canvas reclaims the freed horizontal space. Persists to `sdg-palette-collapsed`.
+
+**5. Canvas zoom-out gutter.** The Canvas's `fitBounds` call on puzzle switch now reserves a 260-unit top gutter in canvas coords. Result: the initial fit places the top row of nodes BELOW the ComponentInfo overlay's screen position instead of behind it. Applied to all puzzles (not Lesson-14-specific). One-line fix: `minY -= TOP_GUTTER` plus matching `height += TOP_GUTTER`.
+
+**6. Fixed-height results column with scroll affordance.** The right column of the top bar (sim metrics + requirements + warnings) was growing the bar height when a long requirements list (Lesson 14's 9 reqs) was rendered. Operator: *"overflow textbox should not resize top pane."* Fix: `.puzzle-results-wrap { height: 220px }` — fixed regardless of state. The bar height stays stable from before-Run to after-Run. Scroll affordance landed in three iterations:
+   - First: custom chunky scrollbar + inset bottom shadow fade. Operator: *"the fade is ugly when there's no errors. it overlaps the text asking you to run."* → scoped the fade behind a `--has-data` class.
+   - Second: replaced the fade with an explicit "▼ scroll for more ▼" bar shown when overflow exists. Operator: *"i don't like the scroll for more, can we just keep the arrows though but omit text."* → dropped the text.
+   - Third: *"i just want two arrows but spaced apart at 25% and 75% marker of textbox width."* → two arrows absolutely positioned at `left: 25%` and `left: 75%` with `translateX(-50%)` centering. Alternating bounce (400ms delay on second arrow). Same bar mirrored at the top (`▲ ▲`) when scrolled away from the top — visible alone or stacked with the bottom hint depending on scroll position.
+
+**7. Drag-to-resize all three chrome panes.** A new reusable `ResizeHandle` component handles the mousedown / mousemove / mouseup machinery. Mounts as a 6px transparent strip on the relevant edge:
+   - Bottom of top bar (vertical drag, 120-520 px)
+   - Right edge of palette (horizontal drag, 160-420 px). Hidden when palette is collapsed.
+   - Left edge of right stack (horizontal drag with inverted sign, 240-640 px)
+   Each size persists separately (`sdg-top-pane-height`, `sdg-palette-width`, `sdg-right-stack-width`). Handles fade-in on hover (`--text-dim` background) and set body cursor + `user-select: none` while dragging.
+
+**8. Trash icon wiggly bubble pop-in.** Operator: *"i want a nice little animation for it, like maybe a little wiggly bubble expand a little past 100% and then shrinking back to 100%."* Added a 360ms 4-keyframe animation on the floating trash target: `scale(0.4) opacity(0) → scale(1.15) → scale(0.95) → scale(1.04) → scale(1)`. Reads as a "boop" on first appearance. Existing `.hot` hover transform (scale 1.12) takes over after the 360ms animation completes.
+
+### Where state lives
+
+Five new pieces of UI state, all owned by App and persisted to localStorage:
+
+| Key | State | Default |
+|---|---|---|
+| `sdg-lesson-collapsed` | LessonPanel collapsed | false |
+| `sdg-palette-collapsed` | Palette collapsed | false |
+| `sdg-top-pane-height` | Top bar height in px | 280 |
+| `sdg-palette-width` | Palette width in px | 220 |
+| `sdg-right-stack-width` | Right column width in px | 320 |
+
+All five round-trip through useEffect → localStorage on every change. None blocks rendering on read failure (try/catch + fallback).
+
+### Test count
+
+329 → 335 (+6 net):
+- Removed 7 PuzzleBar inline-reading-expander tests (the toggle no longer exists on PuzzleBar).
+- Added 3 PuzzleBar slug tests (first-sentence fallback, explicit slug override, blurb-not-rendered-when-slug-set).
+- Added 6 LessonPanel rendering tests (title, blurb, background paragraphs, sources links + notes, missing-puzzle, empty-sources).
+- Added 4 LessonPanel collapse tests (collapsed hides body + shows ▸, expanded shows body + ▾, click invokes onToggleCollapse, no toggle when callback missing).
+
+ResizeObserver isn't available in jsdom; the PuzzleBar overflow-detection effect guards with `typeof ResizeObserver !== 'undefined'` so tests pass without polyfills.
+
+### Audit per the field-add rule
+
+Five new state keys (the localStorage ones above) and three new components (LessonPanel, ResizeHandle, plus an updated Palette signature). Consumer audit:
+- `PuzzleBar.jsx`: now reads `puzzle.slug` (with blurb fallback). Defined on Lesson 14 only; older puzzles fall through to first-sentence of blurb. ✓
+- `LessonPanel.jsx`: reads `puzzle.blurb`, `puzzle.background`, `puzzle.sources`. All optional; renders nothing if puzzle is null. ✓
+- `Palette.jsx`: new `collapsed` + `onToggleCollapse` props with sensible defaults. Backward compatible. ✓
+- `App.jsx`: passes the new state as props + inline styles to bar / panel / app-body. Removed the dead `readingExpanded` + `readingShownIds` state from the prior auto-open-reading mechanism. ✓
+- `App.css`: new selectors `.puzzle-bar-wrap`, `.palette-wrap`, `.resize-handle*`, `.puzzle-results-wrap`, `.puzzle-results--has-data`, `.puzzle-results-scroll-hint*`, `.lesson-panel*`, `.palette-collapsed`. Old selectors that became dead (e.g. `.reading-toggle` outside lesson panel) are still in the file as no-ops; cleanup deferred.
+
+No mutations to sim result shape or to any data the simulator reads. No risk per [[feedback-audit-consumers-on-field-add]].
+
+### Things to confirm in next play-test pass
+
+- Drag-resize feels right at the extremes (e.g. very small palette, very tall top bar).
+- Scroll-hint arrows are visible enough at typical zoom levels (operator already approved them mid-Part).
+- Trash bubble animation doesn't conflict with the `.hot` hover transform during a fast drag (animation is 360ms; rapid hover within that window may briefly compete on the transform property).
+- The fixed 220px results-wrap doesn't feel wasteful in the empty state. If it does, consider a smaller default and let users drag it bigger.
+
+### What this Part didn't address
+
+- **Stale CSS cleanup**: a few old reading-related selectors (e.g. `.reading-toggle` from when the toggle lived in PuzzleBar) are unused but still in the file. Cosmetic; no behavior impact. Sweep later.
+- **Persisted size sanity-check on reload**: if localStorage has stale values from a different viewport (e.g. a small screen wrote 100px, user reloads on a big screen), the layout still applies the stored size. Clamping is enforced during drag but not at load. Edge case.
+- **Mobile / narrow viewports**: the 3-column grid + chrome assumes desktop widths. The whole game still assumes desktop; not regressing further.
+

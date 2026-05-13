@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+
 export default function PuzzleBar({
   puzzle,
   simResult,
@@ -7,53 +9,53 @@ export default function PuzzleBar({
   onShowSolution,
   onUndo,
   canUndo,
-  readingExpanded,
-  onToggleReading,
   celebrationKey = 0,
 }) {
   const hasSolution = typeof puzzle.solution === 'function';
-  const hasBackground = Array.isArray(puzzle.background) && puzzle.background.length > 0;
-  const hasSources = Array.isArray(puzzle.sources) && puzzle.sources.length > 0;
+  // Slug = a short one-liner under the title. Falls back to the first sentence
+  // of the blurb so older lessons without an explicit slug still show context.
+  const slug = puzzle.slug || firstSentence(puzzle.blurb);
+
+  // The results column caps height and scrolls when its content (sim metrics
+  // + many requirements + warnings) is taller than the cap. Show an explicit
+  // "▼ scroll for more" hint bar only when there's actual overflow AND the
+  // user isn't already at the bottom. Re-checked on content change (Run +
+  // simResult update) and on every scroll event.
+  const resultsRef = useRef(null);
+  const [showScrollHint, setShowScrollHint] = useState(false);
+  const [showScrollUpHint, setShowScrollUpHint] = useState(false);
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    const check = () => {
+      const overflow = el.scrollHeight - el.clientHeight;
+      const atBottom = el.scrollTop >= overflow - 4;
+      const atTop = el.scrollTop <= 4;
+      setShowScrollHint(overflow > 4 && !atBottom);
+      setShowScrollUpHint(overflow > 4 && !atTop);
+    };
+    check();
+    el.addEventListener('scroll', check);
+    // ResizeObserver isn't available in jsdom; gracefully degrade by
+    // skipping the observer in test environments.
+    let ro;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(check);
+      ro.observe(el);
+    }
+    return () => {
+      el.removeEventListener('scroll', check);
+      if (ro) ro.disconnect();
+    };
+  }, [simResult, evaluation]);
+
   return (
     <header className="puzzle-bar">
       <div className="puzzle-info">
         <h1>
           <span className="lesson-pill">Lesson {puzzle.order}</span> {puzzle.title}
         </h1>
-        <p>{puzzle.blurb}</p>
-        {hasBackground && (
-          <button
-            type="button"
-            className="reading-toggle"
-            onClick={onToggleReading}
-            aria-expanded={readingExpanded}
-          >
-            <span className="reading-toggle-icon">{readingExpanded ? '▾' : '▸'}</span>
-            {readingExpanded ? 'Hide full lesson' : 'Read full lesson'}
-          </button>
-        )}
-        {hasBackground && readingExpanded && (
-          <div className="reading-inline">
-            {puzzle.background.map((p, i) => (
-              <p key={i}>{p}</p>
-            ))}
-            {hasSources && (
-              <div className="reading-sources">
-                <h3>Sources</h3>
-                <ul>
-                  {puzzle.sources.map((s) => (
-                    <li key={s.url}>
-                      <a href={s.url} target="_blank" rel="noreferrer noopener">
-                        {s.title}
-                      </a>
-                      {s.note && <span className="reading-sources-note"> — {s.note}</span>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
+        {slug && <p className="puzzle-slug">{slug}</p>}
       </div>
       <div className="puzzle-actions">
         <button className="primary-button" onClick={onRun}>
@@ -82,7 +84,17 @@ export default function PuzzleBar({
           Reset
         </button>
       </div>
-      <div className="puzzle-results">
+      <div className="puzzle-results-wrap">
+      {showScrollUpHint && (
+        <div className="puzzle-results-scroll-hint puzzle-results-scroll-hint--up" aria-hidden="true">
+          <span className="scroll-hint-arrow">▲</span>
+          <span className="scroll-hint-arrow">▲</span>
+        </div>
+      )}
+      <div
+        ref={resultsRef}
+        className={`puzzle-results${simResult ? ' puzzle-results--has-data' : ''}`}
+      >
         {!simResult && <div className="dim">Press Run to test your system.</div>}
         {simResult && !simResult.ok && <div className="bad">Error: {simResult.error}</div>}
         {simResult && simResult.ok && simResult.kind === 'flow' && <FlowResults r={simResult} />}
@@ -117,8 +129,23 @@ export default function PuzzleBar({
           </div>
         )}
       </div>
+      {showScrollHint && (
+        <div className="puzzle-results-scroll-hint" aria-hidden="true">
+          <span className="scroll-hint-arrow">▼</span>
+          <span className="scroll-hint-arrow">▼</span>
+        </div>
+      )}
+      </div>
     </header>
   );
+}
+
+function firstSentence(text) {
+  if (!text || typeof text !== 'string') return null;
+  // Match up to first '.', '!', '?' followed by whitespace or end of string.
+  // Falls back to the full string if no sentence-ender is found.
+  const m = text.match(/^[^.!?]+[.!?](?:\s|$)/);
+  return (m ? m[0] : text).trim();
 }
 
 function FlowResults({ r }) {

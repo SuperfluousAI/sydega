@@ -115,16 +115,40 @@ const TRASH_RELOCATE_MS = 2000;
 // the player hovered the bin for 2 seconds without moving.)
 const TRASH_SLOT_COUNT = 4;
 
-function anchorsFromRect(rect) {
+function anchorsFromRect(rect, viewportRect) {
   // The bin is positioned by its top-left corner (CSS left/top). For slots
   // where the bin sits to the LEFT or ABOVE the node, we subtract bin
   // size so the bin's RIGHT or BOTTOM edge lines up with the padding gap.
-  return [
+  const raw = [
     { x: rect.right + TRASH_PADDING,                y: rect.bottom + TRASH_PADDING },
     { x: rect.left - TRASH_PADDING - TRASH_BIN_W,   y: rect.top - TRASH_PADDING - TRASH_BIN_H },
     { x: rect.left - TRASH_PADDING - TRASH_BIN_W,   y: rect.bottom + TRASH_PADDING },
     { x: rect.right + TRASH_PADDING,                y: rect.top - TRASH_PADDING - TRASH_BIN_H },
   ];
+  if (!viewportRect) return raw;
+  // Score each slot by how far it would extend outside the canvas. Lower
+  // is better; zero means fully inside. Stable sort keeps slot 0 first
+  // when multiple ties exist.
+  const SAFE_MARGIN = 8;
+  const minX = viewportRect.left + SAFE_MARGIN;
+  const minY = viewportRect.top + SAFE_MARGIN;
+  const maxX = viewportRect.right - TRASH_BIN_W - SAFE_MARGIN;
+  const maxY = viewportRect.bottom - TRASH_BIN_H - SAFE_MARGIN;
+  const overflowOf = (a) =>
+    Math.max(0, minX - a.x) +
+    Math.max(0, minY - a.y) +
+    Math.max(0, a.x - maxX) +
+    Math.max(0, a.y - maxY);
+  const sorted = raw
+    .map((a, i) => ({ a, i, ov: overflowOf(a) }))
+    .sort((p, q) => p.ov - q.ov)
+    .map(({ a }) => a);
+  // Clamp every slot to be safely inside the viewport — even the rotated
+  // ones we might fall back to on long-hover should never clip.
+  return sorted.map((a) => ({
+    x: Math.max(minX, Math.min(maxX, a.x)),
+    y: Math.max(minY, Math.min(maxY, a.y)),
+  }));
 }
 
 // Reject a connection that's the wrong way around. A valid edge goes from a
@@ -185,11 +209,22 @@ function CanvasInner({
     const minY = Math.min(...points.map((p) => p.minY));
     const maxX = Math.max(...points.map((p) => p.maxX));
     const maxY = Math.max(...points.map((p) => p.maxY));
+    // Reserve canvas-space gutter at the top of the bounding box so the
+    // ComponentInfo overlay (absolute-positioned at top of canvas-wrapper,
+    // ~130-180px screen-space depending on content) doesn't sit over the
+    // top row of nodes. By extending minY upward, fitBounds zooms out
+    // enough that the visible top of the content sits BELOW the overlay.
+    const TOP_GUTTER = 260;
     // setTimeout pushes the call past React Flow's own fitView so we win the
     // race; otherwise initial render briefly shows the smaller fit-to-nodes view.
     const id = setTimeout(() => {
       reactFlow.fitBounds(
-        { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+        {
+          x: minX,
+          y: minY - TOP_GUTTER,
+          width: maxX - minX,
+          height: maxY - minY + TOP_GUTTER,
+        },
         { padding: 0.08, duration: 0 }
       );
     }, 0);
@@ -365,7 +400,8 @@ function CanvasInner({
     const nodeEl = wrapperRef.current?.querySelector(`.react-flow__node[data-id="${node.id}"]`);
     const rect = nodeEl?.getBoundingClientRect();
     if (rect) {
-      setTrashAnchors(anchorsFromRect(rect));
+      const viewportRect = wrapperRef.current?.getBoundingClientRect();
+      setTrashAnchors(anchorsFromRect(rect, viewportRect));
     } else {
       // Fall back to a cursor-relative offset if the DOM query fails — defensive,
       // shouldn't happen, but better than nothing rendering.
