@@ -1544,3 +1544,118 @@ Known limitation: property edits snapshot per keystroke (one snapshot per charac
 - **Coalesce property-edit snapshots**: optional polish.
 - **Visual cascade indicator on failure injection**: when a node fails, the downstream stranded nodes could pulse red to make the failure cascade obvious.
 
+
+
+## Session 1 Part 16 — 2026-05-12: First *real* (research-driven) puzzle landed. Lesson 13 — TinyURL at Interview Scale. Two new components (KGS, Rate Limiter). Test count 299 → 310.
+
+### What changed in the process this Part
+
+Operator asked for puzzles that are "real" — grounded in actual SDI interview material rather than my pattern-matched abstractions. Built a new workflow:
+
+1. **Research phase** — fetch the systemdesign.io question page + every linked "good solution" in parallel. Extract: questions interviewers ask, scale numbers, architectural consensus, deep-dive sections.
+2. **Synthesis** — write `puzzle-research/url-shortener.md` with cross-source comparison + mapping of "what we can model" vs "what we abstract."
+3. **Proposal** — write `puzzle-research/url-shortener-puzzle-proposal.md` with canonical solution, components needed, decisions to surface.
+4. **Approval gate** — operator approves explicit decisions (5 of them this time) before any code changes. Critical: this is the new "pause-to-audit before scope expansion."
+5. **Build** — once approved, the code changes are mechanical.
+
+The new directory `puzzle-research/` holds these artifacts and is the durable record of "why this puzzle exists in this shape." Future puzzles get the same treatment.
+
+### Two new components
+
+**Rate Limiter** (`rateLimiter`): passthrough between the gateway (CDN-misses + writes) and the LB. Capacity represents the per-second rate budget. Real: Cloudflare Rate Limiting, AWS WAF, NGINX limit_req. Pedagogy: places at the gateway, not behind the LB — students learn this is an *origin protection* component.
+
+**KGS** (`kgs`, Key Generation Service): passthrough between App Servers and URL Database, **on the write path only**. Has `acceptsReads: false` so accidentally routing reads through it surfaces a warning. Capacity is `keysPerSec`. Pedagogy: pre-generation eliminates collision checks at write time — the canonical FAANG answer to "how do you generate a unique short ID?"
+
+Both are stand-alone top-level types, not roles on existing components. Considered making them roles on `loadBalancer` (similar passthrough shape), but the unification rule [[feedback-prefer-unified-taxonomy]] says unify when *structurally similar* — these differ in pedagogical placement (RateLimiter at gateway, KGS on write path) and one carries the unusual `acceptsReads: false` constraint. Separate types are correct.
+
+### Lesson 13 — the canonical TinyURL answer, modeled
+
+Three independent flows on the canvas:
+
+```
+Posters (100 w/s) ──────────────────────► RateLimiter ─► LB ─┐
+                                                            │
+Visitors (10k r/s) ─► CDN ─[5%, 500 r/s]─► RateLimiter ─► LB ┤
+                                                            │
+                                          ┌──► Apps ────────┘
+                                          │     ├─[R]─► Cache ─[20%]─► URL DB
+                                          │     └─[W]─► KGS ─► URL DB
+                                          │
+Analytics Gen (500 ev/s) ─► Queue ─► Workers ─► Analytics DB
+```
+
+**15 nodes, 17 edges.** Verified by hand and by sim:
+- All 10,000 visitor reads served (95% at CDN, 4% at internal cache, 1% from URL DB)
+- All 100 posters' writes served via KGS → URL DB
+- All 500 analytics events drain through Queue → 2 Workers → Analytics DB
+- avgP99 = 10.54ms (cap is 100ms), avgLatency = 2.88ms
+
+The Analytics Generator is a separate Client emitting at 500 events/sec. This is an honest abstraction documented in lesson copy: in production, every redirect emits a log event — but our flow sim can't duplicate traffic across edges, so we model the implicit analytics stream as a parallel input.
+
+### What the lesson answers — and what it doesn't
+
+Cross-referenced with the 8 questions on the systemdesign.io page:
+
+| Q | Asked | Answered by Lesson 13? |
+|---|---|---|
+| 1 | How do you generate a unique short ID? | ✅ KGS component |
+| 2 | How do you avoid collisions? | ✅ KGS pre-generates pool, no runtime collision checks |
+| 3 | How do we prevent malicious links? | ❌ → simplifications.md #6 |
+| 4 | Do we rate-limit abusive clients? | ✅ RateLimiter component |
+| 5 | Do we support link expiration? | ❌ → simplifications.md #4 |
+| 6 | How do we store analytics logs? | ✅ Async via Queue + Workers + separate DB |
+| 7 | Should we cache short URLs? | ✅ CDN + Internal Cache |
+| 8 | How do we handle hot keys? | ✅ CDN absorbs at edge |
+
+**6 of 8 answered architecturally on the canvas.** The 2 we don't model (malicious URL filtering, TTL) are documented in `simplifications.md` entries 4-6, each with "What a student should know" framing — so a candidate moving from this lesson to a real interview has the right talking points.
+
+### Test additions
+
+3 targeted failure-mode tests:
+1. **No KGS** → hasKgs predicate fails (Q1+Q2 unanswered).
+2. **KGS undersized** (cap 30 vs 100 writes/sec needed) → 70% of write traffic drops; writeSuccessRate falls below 99%. Pedagogy: KGS is a real bottleneck, not just a checkbox.
+3. **Reads routed through KGS** → simulator's `acceptsReads: false` fires the standard "X doesn't accept reads" warning. Validates the new component-level constraint.
+
+Plus the framework auto-tests: each new componentType gets 3 contract tests (puzzle ordering + initialNodes + allowedComponents); the new componentInfo entries get covered by the existing description-presence test.
+
+Total: 307 → 310 from this Part. Adding ~10 tests for one lesson is in the band I'd expect.
+
+### Audit per the field-add rule
+
+New types added: `kgs`, `rateLimiter`. Consumer audit:
+- `componentTypes.js` — base registry (the canonical source).
+- `componentInfo.js` — entries for both added; `infoFor()` resolves via key lookup, automatic.
+- `simulator.js` — loops via `meta.role`; both types use `'passthrough'` so no special case needed. The `acceptsReads: false` field on KGS is already handled generically (existing logic since the readReplica type).
+- `Canvas.jsx` — raw `componentTypes[type]` reads check `container` / `nodeStyle` flags; neither new type is a container.
+- `App.jsx` — same.
+- Helpers (`metaFor`, `paletteMetaFor`, `defaultsFor`) — all key-based; automatic.
+- Tests (`puzzles.test.js` contract tests) — auto-loop over `componentTypes`; pick up new entries automatically.
+
+Audit clean. No missed consumers.
+
+### Decision-state log
+
+The 5 decisions surfaced and approved before the build:
+
+1. **KGS as new top-level component**: yes. Approved.
+2. **Rate Limiter as new top-level component**: yes (operator overrode my "defer" recommendation). I had proposed deferring; operator chose to include. Right call — including it makes the lesson answer Q4 properly, not just hand-wave it.
+3. **Slot as Lesson 13**: yes, after twitterAtScale capstone.
+4. **Workload as proposed** (100 w/s + 10k r/s + 500 analytics events/sec): yes.
+5. **rateLimiter in simplifications.md**: NO — operator: *"we're implementing it so it shouldn't be in there anyways."* Sharp catch — I had it in the proposal as a defer-acknowledgement, but since we're implementing, it doesn't belong.
+
+The pattern that emerged: operator pushed harder than my recommendations on two of the five decisions (Rate Limiter inclusion, no defer note). Same pattern as before — my "lean cheaper" bias undershoots. The captured memory [[feedback-prefer-unified-taxonomy]] is one expression of this; this Part adds another data point. Continuing to lean cleaner upfront.
+
+### Workflow innovation: `puzzle-research/` directory
+
+The two files written this Part:
+- `url-shortener.md` — captured research from 3 sources + cross-source comparison
+- `url-shortener-puzzle-proposal.md` — proposal with explicit decisions
+
+These are the new durable artifacts for "real" puzzles. The workflow scales: any future puzzle grounded in interview material gets the same treatment. Research → proposal → approval → build. Each puzzle's research file is a check on whether the lesson actually defends the canonical answer.
+
+### What this Part didn't address
+
+- **Lesson 4 + 5 (connectivity arc continuation: peering + Datacenter)**: still pending. The TinyURL puzzle was operator's higher priority.
+- **CronJob / scheduled cleanup component**: would naturally pair with TTL modeling. Not yet built.
+- **Per-client rate limiting (not just per-second global cap)**: the current Rate Limiter models a global rate, not per-client buckets. Could refine if a future lesson needs the distinction.
+

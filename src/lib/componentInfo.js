@@ -110,6 +110,30 @@ export const componentInfo = {
     realWorld: 'AWS EC2, DigitalOcean Droplets, Linode, Hetzner — all VPSes. Each has a public IP you point your domain at.',
   },
 
+  // ─── Lesson 13 building blocks: Rate Limiter + KGS ──────────────────────
+  rateLimiter: {
+    description:
+      'A gateway component that drops traffic above a per-second rate. Sits at the edge of your origin, ' +
+      'protecting downstream from abuse (DDoS, scraping, runaway clients). Real implementations track per-IP / per-API-key buckets.',
+    usage:
+      'Place between the public internet (or a CDN) and your Load Balancer. Set the capacity to your acceptable request rate; ' +
+      'traffic above that threshold drops. The Rate Limiter is cheap (low latency) but load-bearing — without it, an abusive ' +
+      'client can saturate your origin.',
+    connects: 'Wires from a Client (or CDN miss-path) on the input side, to a Load Balancer on the output side.',
+    realWorld: 'AWS WAF rate-based rules, Cloudflare Rate Limiting, Envoy/Istio rate-limit filters, NGINX limit_req — the gateway-layer abuse guard.',
+  },
+  kgs: {
+    description:
+      'A Key Generation Service — pre-generates the short IDs your URL shortener vends. Lives on the write path, between ' +
+      'the App Server and the URL Database. By pre-generating IDs offline, it eliminates collision checks at write time ' +
+      '(no DB roundtrip per write to check "is this ID taken?").',
+    usage:
+      'Wire App Servers to the KGS for the write path. The KGS\'s capacity is the rate at which it can vend new keys. Reads ' +
+      'don\'t go through the KGS — accidentally routing reads here will be flagged. Real KGS has a standby replica for failover.',
+    connects: 'Wires from App Servers on the input side (writes only). Wires out to the URL Database (where the new mapping is persisted).',
+    realWorld: 'Bit.ly, TinyURL, and most URL-shortener architectures use this pattern. Common implementations: pre-generated key pool in a separate DB; per-server local key cache for speed; Zookeeper-coordinated counter ranges per shard.',
+  },
+
   // ─── Lessons 4-6: Flow components ───────────────────────────────────────
   client: {
     description: 'Simulated user traffic. Generates a steady rate of requests per second (req/s).',

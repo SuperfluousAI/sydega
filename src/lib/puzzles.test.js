@@ -965,6 +965,88 @@ describe('canonical solutions', () => {
     expect(ev.passed).toBe(false);
   });
 
+  it('TinyURL at Scale: no KGS → hasKgs predicate fails (Q1+Q2 not answered)', () => {
+    const p = puzzles.tinyurlAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('cdn', 'cache', { role: 'cdn' }),
+      node('rl', 'rateLimiter'),
+      node('lb', 'loadBalancer'),
+      node('app', 'service', { role: 'appServer', capacity: 1000 }),
+      node('cache', 'cache', { role: 'internal' }),
+      node('db', 'database'),
+      node('q', 'queue'),
+      node('w', 'service', { role: 'worker', capacity: 500 }),
+      node('analytics-db', 'database'),
+    ];
+    const r = simulate(p, nodes, [
+      edge('visitors', 'cdn', 'read'),
+      edge('cdn', 'rl', 'read'),
+      edge('posters', 'rl', 'write'),
+      edge('rl', 'lb'),
+      edge('lb', 'app'),
+      edge('app', 'cache', 'read'),
+      edge('app', 'db', 'write'), // writes go straight to DB, no KGS
+      edge('cache', 'db', 'read'),
+      edge('analytics-gen', 'q'),
+      edge('q', 'w'),
+      edge('w', 'analytics-db'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasKgs').passed).toBe(false);
+  });
+
+  it('TinyURL at Scale: KGS undersized → writes drop (Q1: scaling the key-vending layer)', () => {
+    const p = puzzles.tinyurlAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('cdn', 'cache', { role: 'cdn' }),
+      node('rl', 'rateLimiter'),
+      node('lb', 'loadBalancer'),
+      node('app', 'service', { role: 'appServer', capacity: 1000 }),
+      node('cache', 'cache', { role: 'internal' }),
+      node('kgs', 'kgs', { capacity: 30 }), // way under 100 writes/sec needed
+      node('db', 'database'),
+      node('q', 'queue'),
+      node('w', 'service', { role: 'worker', capacity: 500 }),
+      node('analytics-db', 'database'),
+    ];
+    const r = simulate(p, nodes, [
+      edge('visitors', 'cdn', 'read'),
+      edge('cdn', 'rl', 'read'),
+      edge('posters', 'rl', 'write'),
+      edge('rl', 'lb'),
+      edge('lb', 'app'),
+      edge('app', 'cache', 'read'),
+      edge('app', 'kgs', 'write'),
+      edge('kgs', 'db', 'write'),
+      edge('cache', 'db', 'read'),
+      edge('analytics-gen', 'q'),
+      edge('q', 'w'),
+      edge('w', 'analytics-db'),
+    ]);
+    // 30 keys/sec served, 70 posters/sec drop. Plus 500 analytics events ack.
+    // total writes = 600, served = 30 + 500 = 530. successRate = 88%.
+    expect(r.writeSuccessRate).toBeLessThan(0.99);
+    expect(evaluatePuzzle(p, r).passed).toBe(false);
+  });
+
+  it('TinyURL at Scale: KGS acceptsReads:false — accidentally routing reads through KGS drops them', () => {
+    // Pedagogical: a player tries to pipe reads through the KGS (e.g. as a
+    // shortcut). The KGS rejects reads via acceptsReads:false. Warning fires.
+    const p = puzzles.tinyurlAtScale;
+    const r = simulate(
+      p,
+      [
+        node('v', 'client', { rps: 100, readRatio: 1 }),
+        node('k', 'kgs'),
+        node('db', 'database'),
+      ],
+      [edge('v', 'k'), edge('k', 'db')]
+    );
+    expect(r.warnings.some((w) => /KGS.*doesn't accept reads/.test(w))).toBe(true);
+  });
+
   it('Twitter at Scale: no CDN → reads melt the App pool even at high App capacity', () => {
     // 50,000 reads/sec straight to LB → Apps → cache+replicas. Even bumped
     // App capacity can't make this work without offloading 95% to a CDN.

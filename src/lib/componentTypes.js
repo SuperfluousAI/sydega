@@ -269,6 +269,54 @@ export const componentTypes = {
   // a hit rate, pass writes through. Differences are config-only: CDNs have
   // higher hit rate, lower latency (geographically closer), bigger capacity.
   // See caveats.md #8 + simplifications.md for the unification rationale.
+  // ─── Lesson 13 building blocks: Rate Limiter + Key Generation Service ───
+  // Both are passthroughs structurally but pedagogically distinct from a
+  // Load Balancer. They live in their own types because their *placement* +
+  // *intent* differ — and that placement is what the lesson teaches.
+
+  // A Rate Limiter sits at the gateway — between the public internet (or
+  // CDN-misses) and the LB / origin servers. Its capacity represents the
+  // per-second request budget; traffic above that gets dropped (real systems
+  // return 429 Too Many Requests). v1 abstracts per-client tracking: the
+  // capacity here is a global rate limit, not per-client.
+  rateLimiter: {
+    label: 'Rate Limiter',
+    color: '#f97316',
+    role: 'passthrough',
+    hasInput: true,
+    hasOutput: true,
+    defaults: { capacity: 100_000, latency: 1, p99Latency: 3 },
+    props: [
+      { key: 'capacity', label: 'Rate limit (req/s)', type: 'number', min: 1, step: 1000 },
+      { key: 'latency', label: 'Mean added latency (ms)', type: 'number', min: 0, step: 1 },
+      { key: 'p99Latency', label: 'p99 added latency (ms)', type: 'number', min: 0, step: 1 },
+    ],
+  },
+
+  // A Key Generation Service vends pre-generated short IDs for URL writes.
+  // Sits on the WRITE PATH between App Servers and the URL Database. Real
+  // KGS implementations pre-generate a pool of 7-char base62 keys offline,
+  // serve them at runtime, and track which are used — eliminating collision
+  // checks at write time. We model the rate at which it can vend keys via
+  // `keysPerSec`. acceptsReads:false because KGS only sits in the write path;
+  // accidentally wiring reads through it surfaces an actionable warning.
+  kgs: {
+    label: 'KGS',
+    color: '#64748b',
+    role: 'passthrough',
+    hasInput: true,
+    hasOutput: true,
+    acceptsReads: false,
+    acceptsWrites: true,
+    defaults: { keyPoolSize: 1_000_000_000, capacity: 500, latency: 2, p99Latency: 5 },
+    props: [
+      { key: 'keyPoolSize', label: 'Pre-generated key pool size', type: 'number', min: 1, step: 1_000_000 },
+      { key: 'capacity', label: 'Keys vended per sec', type: 'number', min: 1, step: 50 },
+      { key: 'latency', label: 'Mean added latency (ms)', type: 'number', min: 0, step: 1 },
+      { key: 'p99Latency', label: 'p99 added latency (ms)', type: 'number', min: 0, step: 1 },
+    ],
+  },
+
   cache: {
     role: 'cache',
     hasInput: true,

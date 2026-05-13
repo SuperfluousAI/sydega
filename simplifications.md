@@ -48,6 +48,48 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 
 ---
 
+## 4. TTL / link expiration (Lesson 13 — TinyURL)
+
+**Where it shows up**: Lesson 13 doesn't model link expiration. The URL Database stores entries forever; no Cleanup Service sweeps expired keys back to the KGS.
+
+**What we say**: URLs persist indefinitely. The architecture is steady-state.
+
+**What's actually going on in production**: Real URL shorteners have a default TTL (typically 1-2 years per Bitly / TinyURL). Expired keys are reclaimed into the KGS pool via a Cleanup Service that runs during low-traffic windows. Accessing an expired link returns HTTP 410 Gone (not 404 — semantically distinct from "never existed").
+
+**Why we abstract**: TTL is a time-axis concept; our simulator is steady-state (rates per second, not events over time). Modeling time decay requires a different sim shape.
+
+**What a student should know**: Real systems answer "Q5: Do we support link expiration?" with: (a) default TTL, (b) lazy expiration on read, (c) scheduled background cleanup, (d) key recycling back to the KGS. Mention all four in an interview.
+
+---
+
+## 5. Custom aliases (Lesson 13 — TinyURL)
+
+**Where it shows up**: Lesson 13's KGS vends auto-generated 7-char IDs. We don't model user-chosen short URLs (`myapp.co/launch-day`).
+
+**What we say**: All short URLs come from the KGS pool. The lesson is about the auto-generation path.
+
+**What's actually going on in production**: Real URL shorteners support custom aliases — users pick their own short URL (subject to length limits and a reserved-name list). These live in a separate namespace from auto-generated IDs to avoid conflicts. Collision handling for user-chosen names is a synchronous DB check; uniqueness is enforced at write.
+
+**Why we abstract**: Custom aliases introduce a separate namespace + collision protocol the simulator can't easily express (we don't model name-equality constraints between nodes).
+
+**What a student should know**: In a real interview, custom aliases live in a separate DB table from KGS-generated keys. The application layer checks the custom-alias DB first on read; falls back to the auto-generated DB on miss. Reserved names (e.g., `myapp.co/admin`) live in a third namespace.
+
+---
+
+## 6. Malicious URL filtering (Lesson 13 — TinyURL)
+
+**Where it shows up**: Lesson 13 doesn't model phishing/malware/spam URL detection. Any long URL the Posters submit is accepted.
+
+**What we say**: All URLs are equally legitimate.
+
+**What's actually going on in production**: URL shorteners are a popular vector for phishing — short URLs hide the destination. Mitigations: blacklist of known-malicious domains; reputation services (Google Safe Browsing API, VirusTotal API); content inspection of the destination page; user-reported abuse flagging. Some shorteners check at write time; others check on every redirect.
+
+**Why we abstract**: Content inspection requires modeling the URL payload itself, which our flow-rate sim has no notion of.
+
+**What a student should know**: Real answers to "Q3: How do we prevent malicious links?" cover: API-key gating, domain blacklist at write, reputation API integration, abuse-flag pipeline (user reports → ML scoring → manual review → takedown), and rate limiting on the create endpoint as a coarse-grained abuse signal.
+
+---
+
 ## How to add an entry
 
 When you simplify a real-world concept for pedagogical clarity:

@@ -972,6 +972,156 @@ export const puzzles = {
       ],
     }),
   },
+
+  tinyurlAtScale: {
+    id: 'tinyurlAtScale',
+    order: 13,
+    title: 'TinyURL at Interview Scale',
+    blurb:
+      'The canonical FAANG interview question: design a URL shortener at scale. 100 URL creates/sec from Posters, 10,000 redirects/sec from Visitors, plus 500 analytics events/sec that log every origin-side click. You\'re defending 8 questions interviewers ask: ID generation, collision avoidance, hot keys, caching, analytics logging, rate limiting, malicious URLs, link expiration. This puzzle answers 5 architecturally (CDN, KGS, RateLimiter, Cache, Queue+Workers); the other 3 (malicious filtering, TTL, custom aliases) are documented in simplifications.md as out-of-scope-for-the-canvas. Targets: reads ≥ 99%, writes ≥ 99%, background ≥ 99%, sync p99 ≤ 100ms, must use CDN + Rate Limiter + KGS + Queue.',
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'loadBalancer',
+      'rateLimiter',
+      { type: 'cache', role: 'cdn' },
+      { type: 'service', role: 'appServer' },
+      { type: 'service', role: 'worker' },
+      'kgs',
+      'queue',
+      { type: 'cache', role: 'internal' },
+      'database',
+    ],
+    initialNodes: () => [
+      node('posters', 'client', { x: 40, y: 60 }, { rps: 100, readRatio: 0 }),
+      node('visitors', 'client', { x: 40, y: 280 }, { rps: 10000, readRatio: 1 }),
+      node('analytics-gen', 'client', { x: 40, y: 540 }, { rps: 500, readRatio: 0 }),
+    ],
+    requirements: [
+      {
+        key: 'reads',
+        label: 'Redirects served ≥ 99% (Visitors load short URLs)',
+        test: (r) => r.readSuccessRate >= 0.99,
+        lesson:
+          '10k reads/sec can\'t hit the origin directly — a CDN at the edge absorbs the bulk; an internal Cache absorbs misses; ' +
+          'the URL DB only sees the long-tail. Find which layer is dropping.',
+      },
+      {
+        key: 'writes',
+        label: 'Writes served ≥ 99% (URL creates + analytics events)',
+        test: (r) => r.writeSuccessRate >= 0.99,
+        lesson:
+          'Writes include both Posters (URL creates → KGS → DB) and the Analytics Generator (events → Queue). If writes drop, ' +
+          'check the KGS capacity (default 500 keys/sec — well over 100 needed) and that analytics events reach a Queue.',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (analytics workers drain the queue)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'Analytics events that enqueue must reach the Analytics DB through Workers. 500 events/sec needs 500 jobs/sec of ' +
+          'Worker capacity. Watch the bottleneck row.',
+      },
+      {
+        key: 'p99Latency',
+        label: 'Sync p99 latency ≤ 100ms',
+        test: (r) => r.avgP99Latency <= 100,
+        lesson:
+          'With CDN absorbing 95% of reads at ~5ms p99 and the rest passing through a cache (78ms p99 worst case), the served ' +
+          'average lands well under 100ms. Without a CDN, every redirect pays the full origin chain.',
+      },
+      {
+        key: 'hasCdn',
+        label: 'Uses a CDN at the edge (handles hot keys, Q7+Q8)',
+        predicate: { kind: 'presence', type: 'cache', role: 'cdn', min: 1 },
+        lesson:
+          'A CDN absorbs viral URLs at the edge — 95% hit rate keeps your origin out of the hot path. Without one, a celebrity ' +
+          'sharing a short URL melts your service. (Source page Q7: "Should we cache?" Q8: "How do we handle hot keys?")',
+      },
+      {
+        key: 'hasKgs',
+        label: 'Uses a Key Generation Service (Q1+Q2)',
+        predicate: { kind: 'presence', type: 'kgs', min: 1 },
+        lesson:
+          'KGS pre-generates short IDs offline and vends them to App Servers. Without it, every URL create costs a DB lookup ' +
+          'to check "is this ID taken?" — turning writes into expensive collision checks. (Source page Q1: "How do you generate ' +
+          'a unique short ID?" Q2: "How do you avoid collisions?")',
+      },
+      {
+        key: 'hasRateLimiter',
+        label: 'Uses a Rate Limiter at the gateway (Q4)',
+        predicate: { kind: 'presence', type: 'rateLimiter', min: 1 },
+        lesson:
+          'A Rate Limiter sits between the public-facing edge and your origin, dropping abusive traffic above a per-second rate. ' +
+          'Without it, a runaway client can saturate your App Servers. (Source page Q4: "Do we rate-limit requests from abusive clients?")',
+      },
+      {
+        key: 'hasQueue',
+        label: 'Uses a Queue for async analytics (Q6)',
+        predicate: { kind: 'presence', type: 'queue', min: 1 },
+        lesson:
+          'Synchronously logging every redirect would couple read latency to your analytics-write speed. The Queue decouples: ' +
+          'ack the redirect immediately, log asynchronously through Workers. (Source page Q6: "How do we store logs for analytics?")',
+      },
+    ],
+    solution: () => ({
+      // 100 writes + 10k reads + 500 analytics-events = three independent flows.
+      //
+      // Read path: Visitors → CDN (95% hit, 9500 served) → RateLimiter →
+      //   LB → 2 Apps → Internal Cache (80% hit, 400 served) → URL DB (100 misses).
+      // Write path: Posters → RateLimiter → LB → Apps → KGS → URL DB.
+      // Analytics path: Analytics Gen → Analytics Queue → 2 Workers → Analytics DB.
+      //
+      // Numbers verified by hand:
+      //   reads: 9500 + 400 + 100 = 10000 served, 100% rate.
+      //   writes (Posters): 100, all reach URL DB. Analytics writes: 500 terminate at Queue.
+      //   total writeSuccessRate = (100+500)/(100+500) = 100%.
+      //   background: 500 jobs/sec drained by 2 Workers @ cap 250 each = 500 cap. 100%.
+      //   p99 avg: CDN hits dominate at 5ms; weighted avg ~12ms.
+      nodes: [
+        node('posters', 'client', { x: 40, y: 60 }, { rps: 100, readRatio: 0 }),
+        node('visitors', 'client', { x: 40, y: 280 }, { rps: 10000, readRatio: 1 }),
+        node('cdn-1', 'cache', { x: 220, y: 280 }, { role: 'cdn' }),
+        node('rate-limiter-1', 'rateLimiter', { x: 440, y: 180 }),
+        node('lb-1', 'loadBalancer', { x: 640, y: 180 }),
+        node('app-1', 'service', { x: 840, y: 100 }, { role: 'appServer' }),
+        node('app-2', 'service', { x: 840, y: 280 }, { role: 'appServer' }),
+        node('cache-1', 'cache', { x: 1060, y: 100 }, { role: 'internal' }),
+        node('kgs-1', 'kgs', { x: 1060, y: 280 }),
+        node('url-db', 'database', { x: 1280, y: 180 }),
+        node('analytics-gen', 'client', { x: 40, y: 540 }, { rps: 500, readRatio: 0 }),
+        node('analytics-queue', 'queue', { x: 320, y: 540 }),
+        node('analytics-worker-1', 'service', { x: 560, y: 480 }, { role: 'worker', capacity: 250 }),
+        node('analytics-worker-2', 'service', { x: 560, y: 600 }, { role: 'worker', capacity: 250 }),
+        node('analytics-db', 'database', { x: 820, y: 540 }),
+      ],
+      edges: [
+        // Read path
+        edge('visitors', 'cdn-1', 'read'),
+        edge('cdn-1', 'rate-limiter-1', 'read'),
+        // Write path
+        edge('posters', 'rate-limiter-1', 'write'),
+        // Shared origin chain
+        edge('rate-limiter-1', 'lb-1'),
+        edge('lb-1', 'app-1'),
+        edge('lb-1', 'app-2'),
+        // Reads from apps → cache → DB on miss
+        edge('app-1', 'cache-1', 'read'),
+        edge('app-2', 'cache-1', 'read'),
+        edge('cache-1', 'url-db', 'read'),
+        // Writes from apps → KGS → URL DB
+        edge('app-1', 'kgs-1', 'write'),
+        edge('app-2', 'kgs-1', 'write'),
+        edge('kgs-1', 'url-db', 'write'),
+        // Analytics pipeline (independent flow)
+        edge('analytics-gen', 'analytics-queue'),
+        edge('analytics-queue', 'analytics-worker-1'),
+        edge('analytics-queue', 'analytics-worker-2'),
+        edge('analytics-worker-1', 'analytics-db'),
+        edge('analytics-worker-2', 'analytics-db'),
+      ],
+    }),
+  },
 };
 
 export const puzzleOrder = [
@@ -987,6 +1137,7 @@ export const puzzleOrder = [
   'newsfeedCore',
   'addCdn',
   'twitterAtScale',
+  'tinyurlAtScale',
 ];
 export const defaultPuzzleId = 'buildComputer';
 
