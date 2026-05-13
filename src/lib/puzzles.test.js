@@ -494,9 +494,11 @@ describe('queue component type (Step 2 — async boundary scaffolding)', () => {
     expect(componentTypes.queue.hasOutput).toBe(true);
   });
 
-  it('queue defaults seed the name prop', () => {
+  it('queue defaults seed topic + Kafka-teaching-aid props', () => {
     const d = defaultsFor('queue');
-    expect(d.name).toBe('jobs');
+    expect(d.topic).toBe('events');
+    expect(d.replicationFactor).toBe(3);
+    expect(d.acks).toBe('all');
   });
 
   it('queue has a componentInfo entry', () => {
@@ -1045,6 +1047,151 @@ describe('canonical solutions', () => {
       [edge('v', 'k'), edge('k', 'db')]
     );
     expect(r.warnings.some((w) => /KGS.*doesn't accept reads/.test(w))).toBe(true);
+  });
+
+  it('Stream Processing (Kafka): single Queue + N Workers can\'t replace partitioning', () => {
+    // Pedagogical: students often want to "just add more workers" instead of
+    // partitioning. With one Queue, only one async fanout slice exists, so
+    // multiple downstream workers split the SAME stream — and any worker
+    // missing capacity still drops events.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q', 'queue'),
+      node('w', 'service', { role: 'worker' }), // default cap 50, can't drain 60k
+      node('db', 'database'),
+    ];
+    const r = simulate(p, nodes, [
+      edge('producers', 'lb'),
+      edge('lb', 'q'),
+      edge('q', 'w'),
+      edge('w', 'db'),
+    ]);
+    // hasPartitionedTopic fails (only 1 queue), and async backs up massively.
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasPartitionedTopic').passed).toBe(false);
+    expect(r.backgroundSuccessRate).toBeLessThan(0.99);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): no Load Balancer (Partition Router) → predicate fails', () => {
+    // Player wires producers directly to multiple Queues. Predicate forces
+    // an explicit router so the architecture matches real Kafka.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('q0', 'queue'),
+      node('q1', 'queue'),
+      node('q2', 'queue'),
+      node('q3', 'queue'),
+      node('w0', 'service', { role: 'worker', capacity: 20000 }),
+      node('w1', 'service', { role: 'worker', capacity: 20000 }),
+      node('w2', 'service', { role: 'worker', capacity: 20000 }),
+      node('w3', 'service', { role: 'worker', capacity: 20000 }),
+      node('db', 'database', { capacity: 80000 }),
+    ];
+    const r = simulate(p, nodes, [
+      edge('producers', 'q0'),
+      edge('producers', 'q1'),
+      edge('producers', 'q2'),
+      edge('producers', 'q3'),
+      edge('q0', 'w0'),
+      edge('q1', 'w1'),
+      edge('q2', 'w2'),
+      edge('q3', 'w3'),
+      edge('w0', 'db'),
+      edge('w1', 'db'),
+      edge('w2', 'db'),
+      edge('w3', 'db'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasPartitionRouter').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): no Storage downstream → hasStorage fails', () => {
+    // Consumer group drains the partitions but events never land in durable
+    // storage. Real stream pipelines always sink somewhere — S3, ES, a DW.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q0', 'queue'),
+      node('q1', 'queue'),
+      node('q2', 'queue'),
+      node('q3', 'queue'),
+      node('w0', 'service', { role: 'worker', capacity: 20000 }),
+      node('w1', 'service', { role: 'worker', capacity: 20000 }),
+      node('w2', 'service', { role: 'worker', capacity: 20000 }),
+      node('w3', 'service', { role: 'worker', capacity: 20000 }),
+    ];
+    const r = simulate(p, nodes, [
+      edge('producers', 'lb'),
+      edge('lb', 'q0'),
+      edge('lb', 'q1'),
+      edge('lb', 'q2'),
+      edge('lb', 'q3'),
+      edge('q0', 'w0'),
+      edge('q1', 'w1'),
+      edge('q2', 'w2'),
+      edge('q3', 'w3'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    expect(ev.results.find((rq) => rq.key === 'hasStorage').passed).toBe(false);
+    expect(ev.passed).toBe(false);
+  });
+
+  it('Stream Processing (Kafka): under-sized consumers (default Worker cap 50) → async drops', () => {
+    // Architecture is right (router + partitioned topic + consumer group +
+    // storage), but each Worker uses default capacity. 60k events / 6
+    // partitions = 10k/sec/partition, way over the default cap of 50.
+    const p = puzzles.streamProcessingAtScale;
+    const nodes = [
+      ...p.initialNodes(),
+      node('lb', 'loadBalancer', {}, { capacity: 60000 }),
+      node('q0', 'queue'),
+      node('q1', 'queue'),
+      node('q2', 'queue'),
+      node('q3', 'queue'),
+      node('q4', 'queue'),
+      node('q5', 'queue'),
+      node('w0', 'service', { role: 'worker' }), // default cap 50
+      node('w1', 'service', { role: 'worker' }),
+      node('w2', 'service', { role: 'worker' }),
+      node('w3', 'service', { role: 'worker' }),
+      node('w4', 'service', { role: 'worker' }),
+      node('w5', 'service', { role: 'worker' }),
+      node('db', 'database', { capacity: 60000 }),
+    ];
+    const r = simulate(p, nodes, [
+      edge('producers', 'lb'),
+      edge('lb', 'q0'),
+      edge('lb', 'q1'),
+      edge('lb', 'q2'),
+      edge('lb', 'q3'),
+      edge('lb', 'q4'),
+      edge('lb', 'q5'),
+      edge('q0', 'w0'),
+      edge('q1', 'w1'),
+      edge('q2', 'w2'),
+      edge('q3', 'w3'),
+      edge('q4', 'w4'),
+      edge('q5', 'w5'),
+      edge('w0', 'db'),
+      edge('w1', 'db'),
+      edge('w2', 'db'),
+      edge('w3', 'db'),
+      edge('w4', 'db'),
+      edge('w5', 'db'),
+    ]);
+    const ev = evaluatePuzzle(p, r);
+    // hasConsumerGroup predicate passes (6 workers exist) but the math
+    // doesn't: defaults don't drain 10k events/sec per partition.
+    expect(ev.results.find((rq) => rq.key === 'hasConsumerGroup').passed).toBe(true);
+    expect(r.backgroundSuccessRate).toBeLessThan(0.99);
+    expect(ev.results.find((rq) => rq.key === 'asyncSuccess').passed).toBe(false);
+    expect(ev.passed).toBe(false);
   });
 
   it('Twitter at Scale: no CDN → reads melt the App pool even at high App capacity', () => {

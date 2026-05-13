@@ -973,6 +973,131 @@ export const puzzles = {
     }),
   },
 
+  streamProcessingAtScale: {
+    id: 'streamProcessingAtScale',
+    order: 14,
+    title: 'Stream Processing at Scale (Design Kafka)',
+    blurb:
+      'Design a distributed commit log — what Kafka is. 60,000 events/sec inbound. The trap: scaling the Worker pool downstream of a single Queue almost works, but it\'s the wrong shape. The right shape is *partition the stream*: a Partition Router (Load Balancer) fans writes across N partitioned Queues; one Consumer (Worker) per partition forms the Consumer Group. Partition count = parallelism ceiling. The Queue\'s property panel now shows replicationFactor and acks — these are teaching aids surfaced from real Kafka deployments (RF=3, acks=all are industry defaults); the sim doesn\'t model leader-follower replication or ISR mechanics, but the values are what a candidate would call out in an interview. (Simplifications.md covers the deep-dive answers: ISR, leader election, acks tradeoffs, multi-consumer-group, the "5 reasons Kafka is fast" nuance.)',
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'loadBalancer',
+      'queue',
+      { type: 'service', role: 'worker' },
+      'database',
+    ],
+    initialNodes: () => [
+      node('producers', 'client', { x: 40, y: 320 }, { rps: 60000, readRatio: 0 }),
+    ],
+    requirements: [
+      {
+        key: 'syncSuccess',
+        label: 'Sync success rate ≥ 99% (producers ack at the partition)',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'Producers write 60k events/sec. Each event must reach a partition (Queue). If sync success drops, the Partition Router ' +
+          'capacity is exceeded — or you\'re not actually wiring producers through a router (Q5: load balancing across nodes).',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (consumer group drains the partitions)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'Each Queue (partition) feeds a Worker (consumer). 60k events/sec across 6 partitions means each Worker processes ' +
+          '10k/sec. Default Worker cap is 50 — way under what each partition emits. Either add more Workers per partition or ' +
+          'bump each Worker\'s capacity. The pedagogically correct shape is *one Worker per partition*.',
+      },
+      {
+        key: 'hasPartitionedTopic',
+        label: 'Has at least 4 Queues (partitioned topic)',
+        predicate: { kind: 'presence', type: 'queue', min: 4 },
+        lesson:
+          'A single Queue can\'t scale beyond what one Worker (or one pool draining it) can absorb — and ordering within a ' +
+          'stream is per-partition only. Real Kafka splits a topic into N partitions for parallelism. Drop more Queues ' +
+          'representing partitions. (Q5: partitioning.)',
+      },
+      {
+        key: 'hasPartitionRouter',
+        label: 'Has a Partition Router (Load Balancer fans writes across Queues)',
+        predicate: { kind: 'presence', type: 'loadBalancer', min: 1 },
+        lesson:
+          'Real Kafka\'s producer library hashes the message key to pick a partition. We model that explicitly with a Load ' +
+          'Balancer between Producers and the partitioned Queues — same shape as Lesson 6\'s DB cluster routing, ' +
+          'now applied to a Queue cluster. Without a router, producers either pile onto one partition or fan-out indiscriminately.',
+      },
+      {
+        key: 'hasConsumerGroup',
+        label: 'Consumer Group: at least 4 Workers downstream of the partitions',
+        predicate: { kind: 'presence', type: 'service', role: 'worker', min: 4 },
+        lesson:
+          'A Kafka Consumer Group runs one consumer per partition for parallelism. With 6 partitions you can have up to 6 ' +
+          'workers in the group, each draining its own partition. More workers than partitions means the extras sit idle.',
+      },
+      {
+        key: 'hasStorage',
+        label: 'Has at least one Database (persisted stream output)',
+        predicate: { kind: 'presence', type: 'database', min: 1 },
+        lesson:
+          'Stream processing isn\'t complete until events land somewhere durable. Real pipelines write to S3 / Elasticsearch / ' +
+          'analytics warehouses / Parquet on a data lake. Add a Database downstream of the consumer group.',
+      },
+    ],
+    solution: () => ({
+      // 60,000 events/sec partitioned across 6 Queues (= 10,000 events/sec each).
+      // Each partition gets one Worker in the Consumer Group (cap 10,000) draining
+      // it. Each Worker writes to its dedicated Storage DB (cap 10,000). The
+      // partition count is the parallelism ceiling at every layer.
+      //
+      // Verified: sync 100% (60k → router fans to 6 queues, each accepts 10k);
+      // background 100% (each Worker drains 10k → DB accepts 10k); avgP99 minimal
+      // since this is a write-heavy pipeline through fast hops.
+      nodes: [
+        node('producers', 'client', { x: 40, y: 320 }, { rps: 60000, readRatio: 0 }),
+        node('partition-router', 'loadBalancer', { x: 240, y: 320 }, { capacity: 60000 }),
+        node('partition-0', 'queue', { x: 460, y: 40 }, { topic: 'events' }),
+        node('partition-1', 'queue', { x: 460, y: 140 }),
+        node('partition-2', 'queue', { x: 460, y: 240 }),
+        node('partition-3', 'queue', { x: 460, y: 340 }),
+        node('partition-4', 'queue', { x: 460, y: 440 }),
+        node('partition-5', 'queue', { x: 460, y: 540 }),
+        node('consumer-0', 'service', { x: 680, y: 40 }, { role: 'worker', capacity: 10000 }),
+        node('consumer-1', 'service', { x: 680, y: 140 }, { role: 'worker', capacity: 10000 }),
+        node('consumer-2', 'service', { x: 680, y: 240 }, { role: 'worker', capacity: 10000 }),
+        node('consumer-3', 'service', { x: 680, y: 340 }, { role: 'worker', capacity: 10000 }),
+        node('consumer-4', 'service', { x: 680, y: 440 }, { role: 'worker', capacity: 10000 }),
+        node('consumer-5', 'service', { x: 680, y: 540 }, { role: 'worker', capacity: 10000 }),
+        node('storage-0', 'database', { x: 920, y: 40 }, { capacity: 10000 }),
+        node('storage-1', 'database', { x: 920, y: 140 }, { capacity: 10000 }),
+        node('storage-2', 'database', { x: 920, y: 240 }, { capacity: 10000 }),
+        node('storage-3', 'database', { x: 920, y: 340 }, { capacity: 10000 }),
+        node('storage-4', 'database', { x: 920, y: 440 }, { capacity: 10000 }),
+        node('storage-5', 'database', { x: 920, y: 540 }, { capacity: 10000 }),
+      ],
+      edges: [
+        edge('producers', 'partition-router'),
+        edge('partition-router', 'partition-0'),
+        edge('partition-router', 'partition-1'),
+        edge('partition-router', 'partition-2'),
+        edge('partition-router', 'partition-3'),
+        edge('partition-router', 'partition-4'),
+        edge('partition-router', 'partition-5'),
+        edge('partition-0', 'consumer-0'),
+        edge('partition-1', 'consumer-1'),
+        edge('partition-2', 'consumer-2'),
+        edge('partition-3', 'consumer-3'),
+        edge('partition-4', 'consumer-4'),
+        edge('partition-5', 'consumer-5'),
+        edge('consumer-0', 'storage-0'),
+        edge('consumer-1', 'storage-1'),
+        edge('consumer-2', 'storage-2'),
+        edge('consumer-3', 'storage-3'),
+        edge('consumer-4', 'storage-4'),
+        edge('consumer-5', 'storage-5'),
+      ],
+    }),
+  },
+
   tinyurlAtScale: {
     id: 'tinyurlAtScale',
     order: 13,
@@ -1138,6 +1263,7 @@ export const puzzleOrder = [
   'addCdn',
   'twitterAtScale',
   'tinyurlAtScale',
+  'streamProcessingAtScale',
 ];
 export const defaultPuzzleId = 'buildComputer';
 

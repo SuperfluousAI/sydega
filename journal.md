@@ -1659,3 +1659,152 @@ These are the new durable artifacts for "real" puzzles. The workflow scales: any
 - **CronJob / scheduled cleanup component**: would naturally pair with TTL modeling. Not yet built.
 - **Per-client rate limiting (not just per-second global cap)**: the current Rate Limiter models a global rate, not per-client buckets. Could refine if a future lesson needs the distinction.
 
+## Session 1 Part 17 — 2026-05-12: Lesson 14 — Stream Processing at Scale (Design Kafka). Second research-driven puzzle. Workflow re-tested with R2 multi-source revision after operator pushed on single-source thinness. Test count 310 → 318.
+
+### What changed in the process this Part
+
+Same workflow as Part 16 (`research → proposal → approval → build`), but with one important refinement.
+
+After the first single-source research draft (Better Programming Medium), operator: *"hate that there's only one source you parsed from. do research and get multiple sources to influence this puzzle more."* I refetched 7+ additional sources (Apache official, Confluent design + replication + efficient-design + developer course, ByteByteGo, Anil Goyal deep dive, 2-Minute Streaming on zero-copy). Wrote an **R2** proposal that revised three things:
+- Added `acks` prop to Queue (surfaced as a top deep-dive question by 3+ sources).
+- Added 3 more `simplifications.md` entries (multi-consumer-group, acks, zero-copy nuance, partition immutability) — R1 only had 3.
+- Reframed pedagogy as **two layers**: architecture on canvas, internals in prop labels + lesson copy.
+
+**Workflow lesson**: the proposal step should explicitly count parseable sources. One source = R1 draft. Three+ sources = ready for build. I started with one and got correctly called out. Adding a "Provenance" section to every proposal going forward.
+
+### Operator pushback I almost shipped wrong
+
+R2 also proposed dropping the explicit `hasPartitionRouter` predicate ("the math forces it anyway"). Operator: *"why drop 2? jw"*. I checked: the math doesn't actually force it. Without the predicate, a player can wire Producers directly to multiple Queues — bypassing the routing layer entirely, which is the wrong architecture even if numbers pass. Restored to the requirement set. Six predicates total.
+
+This is the same "my lean-cheaper bias undershoots" pattern from Part 16. Logged.
+
+### Lesson 14 — the canonical Kafka answer, modeled
+
+```
+Producers (60k events/s) ──► Partition Router (LoadBalancer, cap 60k)
+                                  ├──► Partition 0 (Queue) ──► Consumer 0 (Worker, cap 10k) ──► Storage 0 (DB, cap 10k)
+                                  ├──► Partition 1 (Queue) ──► Consumer 1 (Worker, cap 10k) ──► Storage 1 (DB, cap 10k)
+                                  ├──► Partition 2 (Queue) ──► Consumer 2 (Worker, cap 10k) ──► Storage 2 (DB, cap 10k)
+                                  ├──► Partition 3 (Queue) ──► Consumer 3 (Worker, cap 10k) ──► Storage 3 (DB, cap 10k)
+                                  ├──► Partition 4 (Queue) ──► Consumer 4 (Worker, cap 10k) ──► Storage 4 (DB, cap 10k)
+                                  └──► Partition 5 (Queue) ──► Consumer 5 (Worker, cap 10k) ──► Storage 5 (DB, cap 10k)
+```
+
+**20 nodes, 19 edges.** Verified: sync 100% (60k → router fans to 6 queues at 10k each), background 100% (each worker drains 10k → DB accepts 10k). 6 partitions = parallelism ceiling at every layer.
+
+The pedagogy is **partitioning for linear scale**:
+1. Partition count = parallelism cap.
+2. Key-based partitioning preserves per-key ordering.
+3. A single Queue + bigger Worker pool *almost* works, but it's the wrong shape — split into N partitioned Queues.
+
+### Headline pedagogical mechanic in tests
+
+Four targeted failure tests, each isolating one wrong move:
+
+1. **Single Queue + N Workers** — the most likely student misfire ("just add workers"). `hasPartitionedTopic` fails. Async backs up massively.
+2. **No Partition Router** (wiring Producers directly to multiple Queues) — `hasPartitionRouter` predicate fails. This is the test that justified keeping the predicate.
+3. **No Storage downstream** — `hasStorage` fails. Stream pipelines must sink durably.
+4. **Default-capacity Workers** (6 Workers @ cap 50 vs 10k needed) — the architecture is right but each Worker is undersized. `hasConsumerGroup` passes (count is right), but `asyncSuccess` fails (math doesn't). Pedagogically: count without capacity is meaningless.
+
+Plus the canonical-solution test (one of the framework's auto-tests). 314 → 318 from this Part: 4 targeted tests + the canonical was already covered by the existing `puzzleOrder` test.
+
+### Queue type — three teaching-aid props
+
+The Queue componentType picked up three updates:
+
+```js
+queue: {
+  defaults: { topic: 'events', replicationFactor: 3, acks: 'all' },
+  props: [
+    { key: 'topic', label: 'Topic / Queue name', type: 'text' },
+    { key: 'replicationFactor', label: 'Replication factor (teaching aid)', type: 'number', min: 1, step: 1 },
+    { key: 'acks', label: 'Producer acks: 0 | 1 | all (teaching aid)', type: 'text' },
+  ],
+}
+```
+
+- `topic` renames the old `name` field. Same semantics; better label for the Kafka context. Cascades cleanly to all existing puzzles that use Queue (Lesson 7, 8, etc).
+- `replicationFactor` (default 3) — industry standard per Confluent + Apache docs.
+- `acks` (default 'all') — top deep-dive interview question per multi-source.
+
+**None of the three affect the sim.** They surface in the property panel as labels a candidate would say out loud in an interview. This is the **two-layer pedagogy** in code: layer 1 (architecture) is the canvas drawing; layer 2 (internals) is what the property panel signals + what the lesson copy explains. Honest about what's modeled vs. what's a teaching aid.
+
+### What the lesson answers — and what it doesn't
+
+Cross-referenced with the 5 questions on the systemdesign.io Kafka page:
+
+| Q | Asked | Answered by Lesson 14? |
+|---|---|---|
+| 1 | How does Kafka achieve high throughput? | ✅ Partitioning (canvas) + props show acks/RF (panel) + simplifications.md #10 (the "5 reasons" with zero-copy nuance) |
+| 2 | How does Kafka ensure durability? | Partial — `replicationFactor` + `acks` props teach the vocabulary; simplifications.md #7 + #8 cover ISR / leader election / min.insync.replicas |
+| 3 | How does Kafka handle consumer scaling? | ✅ Consumer Group requirement (4+ Workers); simplifications.md #9 covers multi-consumer-group |
+| 4 | How does Kafka guarantee ordering? | Partial — partitioned topic preserves per-partition order; partition immutability is in simplifications.md #11 |
+| 5 | How does Kafka scale horizontally? | ✅ Partitioned topic + consumer group are the headline answer |
+
+3 of 5 fully answered architecturally on the canvas. The other 2 are *teaching-aided* on the canvas + answered fully in simplifications.md. This is appropriate: ISR + leader election are time-axis phenomena our steady-state sim can't model.
+
+### simplifications.md grew by 5
+
+Entries 7-11 added:
+7. Replication factor / ISR / leader election
+8. Acks setting (0/1/all)
+9. Single consumer group per topic
+10. Zero-copy and "5 reasons Kafka is fast" (with TLS nuance)
+11. Partition count is a one-way ratchet
+
+Total now: 11. Half of these were surfaced *only* by R2 multi-source research. The single-source R1 draft would have missed at least 3 of them — strong evidence that multi-source research is load-bearing for puzzle quality, not just a nice-to-have.
+
+### Audit per the field-add rule
+
+Queue type changed (renamed prop + 2 new defaults). Consumer audit:
+- `componentTypes.js` — base registry updated. ✓
+- `componentInfo.js` — queue description still applies; no per-prop schema there. ✓
+- `simulator.js` — reads no Queue-specific props (queue role uses capacity only, which is unchanged). ✓
+- `Canvas.jsx` — renders the prop labels generically via `defaults`. Auto-picks up the new fields. ✓
+- `PropertyPanel.jsx` — auto-renders props from the type's `props` array. ✓
+- All puzzles that use Queue — none reference `node.config.name` explicitly (verified by grep before renaming). ✓
+- Tests — the "queue defaults seed the name prop" test updated to check `topic`, `replicationFactor`, `acks`. ✓
+
+Audit clean. One subtle save: I grep'd usages of `.name` on Queue configs before renaming and confirmed only the prop definition referenced it. If there'd been a downstream reader, this would have been the field-add rule paying off.
+
+### Decision-state log
+
+The 5 R1 decisions (all approved before R2):
+
+1. `replicationFactor` prop on Queue: yes.
+2. Rename Queue's `name` → `topic`: yes.
+3. Workload at 60k events/sec: yes.
+4. Required Storage downstream: yes.
+5. 4-predicate requirement set: kept as 5 after R2 (+ syncSuccess + asyncSuccess metric reqs).
+
+R2 deltas:
+
+6. Add `acks` prop: yes.
+7. Drop `hasPartitionRouter`: **NO** — operator caught, restored.
+8. 6 simplifications.md entries instead of 3 (became 5 in the actual build): yes.
+9. Two-layer pedagogical framing in blurb + lesson copy: yes.
+
+Two of the nine ended up overridden by operator pushback. Continuing the same calibration log: my recommendations underweight rigor / overweight cheapness. Adjusting forward.
+
+### Workflow: `puzzle-research/` directory
+
+Two new files this Part:
+- `kafka.md` — R1 single-source draft, then re-written with 8+ parseable sources for R2.
+- `kafka-puzzle-proposal.md` — R2 proposal with explicit deltas from R1 marked.
+
+The "Provenance" section at the end of `kafka-puzzle-proposal.md` is the new artifact-level safeguard: every future proposal lists the parseable sources count. If it's 1, that's a signal to broaden before approving.
+
+### Test count breakdown
+
+310 → 318 (+8):
+- 4 targeted failure-mode tests for Lesson 14 (above).
+- 1 canonical-solution test (auto via `puzzleOrder` it.each — caught the missed LB capacity bump in the canonical solution; bug surfaced as test failure during build).
+- 3 framework auto-contract tests for componentTypes / componentInfo / defaultsFor over the new puzzle.
+
+### What this Part didn't address
+
+- **Lesson 4 + 5 (connectivity arc: Peering, Datacenter)**: still pending.
+- **Multi-consumer-group as a first-class sim primitive**: simplifications.md #9 documents the gap; a future "broadcast" edge type could close it but would touch the simulator core.
+- **Live broker failure injection** (modeling leader election visually): would require a per-event simulator. Out of scope.
+- **A second Storage layer** (Kafka → S3 → warehouse pipeline): the canvas tops out at one DB sink per consumer. Could extend if a future lesson wants to teach data-lake patterns.
+

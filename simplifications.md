@@ -90,6 +90,76 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 
 ---
 
+## 7. Replication factor / ISR / leader election (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's Queue property panel surfaces `replicationFactor` (default 3) as a *teaching aid* — the value doesn't change the sim. We render each partition as a single Queue node and don't model leader vs. follower replicas.
+
+**What we say**: A partition has a replication factor. RF=3 is the industry default.
+
+**What's actually going on in production**: Each Kafka partition has one leader and `RF-1` followers. The **In-Sync Replica set (ISR)** is the subset of replicas that are caught up to the leader's log. Writes are acknowledged once they reach all ISR members (with `acks=all`). If the leader dies, the controller elects a new leader from the ISR. `unclean.leader.election.enable=false` (the safe default) means: refuse to elect a non-ISR replica even at the cost of unavailability — durability over availability. There's also a **high watermark** — the offset up to which all ISR members have replicated, and the boundary up to which consumers can read.
+
+**Why we abstract**: Modeling replica state machines requires a per-event sim, not a steady-state rate sim. Leader election and ISR shrinkage are time-axis phenomena (events, failures, recoveries) — the wrong shape for our simulator.
+
+**What a student should know**: In an interview, say RF=3 and acks=all (or "RF=3 with min.insync.replicas=2" for the nuanced answer). Know the durability-availability tradeoff: `unclean.leader.election=false` favors durability; `=true` favors availability. The ISR shrinks under slow replicas (controlled by `replica.lag.time.max.ms`); too-aggressive lag thresholds can flap the ISR and reduce effective durability.
+
+---
+
+## 8. Acks setting (0 / 1 / all) (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's Queue property panel surfaces `acks` (default `all`) as a teaching aid. The value doesn't affect sim throughput or latency.
+
+**What we say**: Producers can ack on 0, 1, or all replicas. Default is `all`.
+
+**What's actually going on in production**: `acks=0` means fire-and-forget — the lowest latency but the producer never knows if the message was lost (network failure, broker crash). `acks=1` means the leader ack'd — durable through one broker, but if the leader dies before replication, the message is lost. `acks=all` means every ISR member ack'd — the strongest single-cluster durability guarantee, paired with `min.insync.replicas` to define "how many is enough." Throughput cost: `all` is 2-3× slower than `1` in many benchmarks. Most production systems run `acks=all` with `min.insync.replicas=2` (out of RF=3) so writes still succeed during a single replica outage.
+
+**Why we abstract**: The sim has no notion of producer-side ack latency. Modeling acks meaningfully would require a per-message broker simulator with replica failure injection.
+
+**What a student should know**: `acks=all` + `min.insync.replicas=2` + `RF=3` is the canonical "durable Kafka" config. Know that `acks=1` is what dropped messages in famous outages (LinkedIn's 2014 hash incident; multiple Twitter / Uber post-mortems). `acks=0` exists for logs / metrics where loss tolerance is high.
+
+---
+
+## 9. Single consumer group per topic (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14 models one consumer group: each Queue (partition) feeds exactly one downstream Worker (consumer). The sim divides the queue's output across downstream edges — it doesn't duplicate it.
+
+**What we say**: 6 partitions, 6 consumers, one consumer per partition.
+
+**What's actually going on in production**: A Kafka topic can be read by **multiple consumer groups in parallel**, each tracking its own offset. This is *the* defining Kafka-vs-RabbitMQ feature: a write goes to one topic, and analytics + billing + fraud-detection + audit pipelines can all read it independently, each at their own pace. RabbitMQ would force you to either duplicate the message into N queues at publish-time or use a more complex exchange topology. Kafka treats consumption as a read against a persisted log.
+
+**Why we abstract**: Our sim's edge-flow math divides outgoing rate across edges (load balancing semantics) rather than duplicating it (pub/sub semantics). Two consumer groups would require a different edge type ("broadcast" vs. "share") and a corresponding semantics shift in the simulator.
+
+**What a student should know**: When asked "how would you add a new downstream system?" the answer is *add a new consumer group*, not *modify the producer*. Each consumer group commits its own offsets back to Kafka (in `__consumer_offsets`); they're independent. This decoupling is why Kafka becomes the central log/spine of event-driven architectures.
+
+---
+
+## 10. Zero-copy and "5 reasons Kafka is fast" (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's lesson copy may invoke the famous "5 reasons Kafka is fast" mantra (sequential I/O, batching, compression, zero-copy, page cache).
+
+**What we say**: Kafka is fast because of sequential disk writes, message batching, codec compression, zero-copy `sendfile`, and OS page cache.
+
+**What's actually going on in production**: Sequential I/O, batching, compression, and page cache are real and load-bearing — measured wins. **Zero-copy is more nuanced**: the classic `sendfile(2)` path skips userspace by piping the file directly to the socket, but this is **disabled when TLS encryption is on** (the kernel can't encrypt without copying the bytes through userspace). Since most production Kafka clusters run with TLS, the zero-copy claim is *aspirational rather than load-bearing for those deployments*. Also: in cloud deployments with `network` as the bottleneck rather than `disk`, the zero-copy savings show up as CPU savings on the broker, not throughput gains.
+
+**Why we abstract**: The "5 reasons" mantra is interview shorthand. Nuance lives in the deep dive.
+
+**What a student should know**: Repeat the 5 reasons, but qualify zero-copy: *"it matters when TLS is off and disk is the bottleneck — which it usually isn't anymore."* This is the kind of nuance that distinguishes a senior answer from a memorized one.
+
+---
+
+## 11. Partition count is a one-way ratchet (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's canonical solution uses 6 partitions. The lesson treats partition count as a design-time decision.
+
+**What we say**: Pick your partition count up front based on expected throughput.
+
+**What's actually going on in production**: Kafka lets you *increase* partition count on a live topic, but this **breaks per-key ordering** (existing keys that hashed to partition 0 may now hash to partition 7) and rebalances all consumer groups. Operationally painful. You can never *decrease* partition count without recreating the topic. The rule of thumb: over-partition at the start (rough heuristic: target throughput per partition is ~10MB/s write or ~20MB/s read), since adding consumers is easy but adding partitions is not. Common production heuristic: 6 to 12 partitions per topic by default, scaling to hundreds for high-throughput topics.
+
+**Why we abstract**: Our sim is steady-state; topic reconfiguration is an operational concern, not a throughput one.
+
+**What a student should know**: When asked "how would you handle 10× growth?" the senior answer is *"we over-partitioned at the start"* (because adding partitions live is hazardous), or *"we'd add a new topic with more partitions and dual-write during migration."* Saying "just add partitions" reveals naive ops experience.
+
+---
+
 ## How to add an entry
 
 When you simplify a real-world concept for pedagogical clarity:

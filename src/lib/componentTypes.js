@@ -252,15 +252,24 @@ export const componentTypes = {
   // *out* of a Queue are the background path (typically wired to a Worker
   // service). See Step 3 of the FAANG-prep build for the actual sim logic.
   // v1 has no internal capacity — the queue absorbs whatever it receives.
+  //
+  // `replicationFactor` and `acks` are teaching aids surfaced when the Queue
+  // is used as a Kafka partition (Lesson 14). They don't affect the sim:
+  // we don't model leader-follower replication or acks=all durability. They
+  // exist in the property panel so a student sees the vocabulary and the
+  // values (RF=3, acks=all) that match real Kafka deployments. The lesson
+  // copy + simplifications.md explain the semantics.
   queue: {
     label: 'Queue',
     color: '#06b6d4',
     role: 'queue',
     hasInput: true,
     hasOutput: true,
-    defaults: { name: 'jobs' },
+    defaults: { topic: 'events', replicationFactor: 3, acks: 'all' },
     props: [
-      { key: 'name', label: 'Queue name', type: 'text' },
+      { key: 'topic', label: 'Topic / Queue name', type: 'text' },
+      { key: 'replicationFactor', label: 'Replication factor (teaching aid)', type: 'number', min: 1, step: 1 },
+      { key: 'acks', label: 'Producer acks: 0 | 1 | all (teaching aid)', type: 'text' },
     ],
   },
   // Unified cache type — `internal` (Redis/Memcached-style query/data cache,
