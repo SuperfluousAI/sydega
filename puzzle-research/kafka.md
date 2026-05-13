@@ -181,3 +181,72 @@ The Kafka question has **two distinct interview layers** the candidate must answ
 2. **Internals layer** (the deep dive): why is Kafka fast, what's ISR, what's acks=all, what happens on unclean leader election. **This maps to lesson copy.**
 
 Our puzzle should let students draw layer 1 on the canvas, with layer 2 surfaced via property panel props (acks setting, RF, min.insync) and lesson copy. The lesson copy is where Confluent-grade accuracy beats the simplified "5 reasons" version.
+
+---
+
+## Revision 3 amendment — 2026-05-13: Kafka 4.0+ era research
+
+**Why this amendment exists:** Operator asked for a fresh audit using new and reliable sources after the puzzle was already at 10/10 visual coverage. The Kafka landscape changed materially in March 2025 with the 4.0 release. The puzzle's modeling is still correct, but several elements of the lesson copy and simplifications.md were anchored to pre-4.0 Kafka and needed updating.
+
+### Additional parseable sources consulted
+
+| # | Source | Status | Coverage focus |
+|---|---|---|---|
+| 13 | [Apache Kafka 4.0.0 Release Announcement (March 18, 2025)](https://kafka.apache.org/blog/2025/03/18/apache-kafka-4.0.0-release-announcement/) | Parsed | KRaft-only, KIP-848, KIP-932, KIP-966 |
+| 14 | [Confluent Kafka Scaling Best Practices](https://www.confluent.io/learn/kafka-scaling-best-practices/) | Parsed | 2026 production config baselines |
+| 15 | [LinkedIn Engineering — Running Kafka at Scale](https://engineering.linkedin.com/kafka/running-kafka-scale) | Parsed | LinkedIn cluster metrics |
+| 16 | [LinkedIn — 7 trillion messages per day](https://www.linkedin.com/blog/engineering/open-source/apache-kafka-trillion-messages) | Parsed | LinkedIn 2024 cluster scale |
+| 17 | [InfoQ — Tales of Kafka at Cloudflare: 1 Trillion Messages](https://www.infoq.com/articles/kafka-clusters-cloudflare/) | Parsed | Cloudflare's 14-cluster deployment |
+| 18 | [Confluent: Kafka 4.0 Release Blog](https://www.confluent.io/blog/latest-apache-kafka-release/) | Parsed | Default KRaft, queues, rebalances |
+| 19 | [KIP-405 Tiered Storage GA Release Notes](https://cwiki.apache.org/confluence/x/9xDOEg) | Parsed | Tiered storage production state |
+| 20 | [KIP-926: acks=min.insync.replicas config](https://cwiki.apache.org/confluence/display/KAFKA/KIP-926:+introducing+acks=min.insync.replicas+config) | Parsed | New acks option |
+
+Total parseable sources now: 16 (was 8 in R2).
+
+### Key 2025-2026 changes that affect the lesson
+
+**1. Kafka 4.0 (March 2025) removed Zookeeper entirely.** KRaft is the only supported mode. Production-only since 3.x; in 4.0 there's no migration path: you must already be on KRaft before upgrading. The puzzle's `kafkaController` decorative marker labeled "KRaft Controllers" is now strictly correct (it was ambiguous "or Zookeeper in older deployments" before). componentInfo updated 2026-05-13.
+
+**2. KIP-848 — New Consumer Rebalance Protocol (GA in 4.0).** Eliminates stop-the-world rebalances. Consumers opt in via `group.protocol=consumer`. The old protocol stopped all consumers in a group on every join/leave; the new protocol uses incremental cooperative rebalancing. *Why it matters for the lesson:* if a candidate is asked "what happens when a consumer joins or leaves a group?", the 2026 answer references KIP-848. We don't model rebalancing on canvas — this is internals deep-dive copy.
+
+**3. KIP-932 — Share Groups (GA in 4.0).** Cooperative consumption that gives Kafka queue-like semantics. Multiple consumers in a share group can pull from the same partition concurrently. *This blurs the historical Kafka-vs-RabbitMQ framing.* Pre-4.0: "Kafka is for streams (partitioned, ordered, replayable); RabbitMQ is for tasks (queued, ack-on-consume)." Post-4.0: "Kafka can do both — share groups let you treat a topic as a work queue." Our puzzle still teaches the consumer-group pub/sub story; share groups are a deep-dive note.
+
+**4. KIP-966 — Eligible Leader Replicas (ELR), preview in 4.0.** A subset of the ISR guaranteed to have data up to the high watermark. Safer leader election: even within the ISR, only ELR members are "safe to elect" because they have all committed data. Pre-ELR: any ISR member could be elected and you might lose data committed during the leader's last batch. *Why it matters:* our Phase 3 leader promotion finds the "first healthy replica with matching replicaOf" — that's closer to "unclean leader election" semantics than ELR. We don't model the high watermark, so we can't model ELR precisely. caveats.md #9 mentions this.
+
+**5. KIP-926 — `acks=min.insync.replicas` (new config option).** Producers can ask for "ack when min.insync.replicas have ack'd, not all of ISR." A middle-ground between `acks=1` and `acks=all`. Lower latency than acks=all without the data-loss risk of acks=1. Real production deployments are starting to use this for latency-sensitive write paths. We don't model this; the puzzle has acks=0/1/all only.
+
+**6. Tiered Storage (KIP-405) GA in Kafka 3.9.** Topics can offload old log segments to remote storage (S3, HDFS). Brokers keep recent data on local disk; historical data lives in object storage. *Why it matters for the puzzle:* the "Workers → Storage LB → DB cluster" sink layer is one valid pattern, but in 2026 production, you might not need explicit Workers-to-DB pipeline because Kafka *itself* archives to S3. Our puzzle teaches the consumer-group-writes-to-sink pattern; tiered storage is an alternative architecture for retention/analytics.
+
+### Real-world production numbers (concrete deltas from authoritative sources)
+
+| Source | Number | Implication |
+|---|---|---|
+| LinkedIn 2024 | 7 trillion messages/day, 4000+ brokers, 7M partitions, 100+ clusters | Our 60k msgs/sec puzzle is ~5 orders of magnitude smaller — intentional for whiteboard scale |
+| LinkedIn 2024 | 140 brokers max in their largest single cluster | Validates "cluster" being the unit of scale, not "broker count = solution" |
+| LinkedIn 2024 | 4 cluster types (queuing, metrics, logs, tracking) | Real deployments tier by workload; we model one tier |
+| Cloudflare 2022 | 1 trillion messages, 14 clusters, 330 nodes, 100 Gbps peak | Smaller than LinkedIn but still vastly larger than our model |
+| Confluent recommends | 100-200 partitions per broker baseline; max 4000/broker | Our puzzle: 6 partitions / 3 brokers = 2 per broker. Way below baseline; teaching scale only |
+| Confluent recommends | RF=3, min.insync.replicas=2, acks=all | Matches our canonical exactly ✓ |
+| Confluent recommends | linger.ms = 5-20ms, lz4 or snappy compression | Producer-side tuning; not modeled |
+
+### What didn't change (still authoritative)
+
+- **Topology**: producers → partitioned topic → consumer groups → sinks. Unchanged since 2018.
+- **RF=3 + acks=all + min.insync.replicas=2 as production default.** Still consensus from Confluent + 2-Minute Streaming + LinkedIn.
+- **Partitioning as parallelism ceiling.** Still the foundational insight.
+- **Multi-consumer-group as Kafka-vs-RabbitMQ differentiator.** Share groups (KIP-932) add an alternative but don't replace this.
+- **Per-key ordering preserved within partition.** Apache's official definition.
+- **Pull-based replication** (followers fetch from leader). Unchanged.
+
+### Net effect on the puzzle
+
+- **Code/sim changes needed: none.** The modeling is still architecturally accurate.
+- **Lesson copy / docs to update:**
+  - `componentInfo.kafkaController` — explicit Kafka 4.0/KRaft framing ✓ (done 2026-05-13)
+  - `simplifications.md #7` — drop "or Zookeeper" mention, add ELR note
+  - `simplifications.md #9` — add KIP-932 share groups + KIP-848 rebalancer mentions
+  - **New** `simplifications.md` entry — Tiered Storage (KIP-405)
+  - **New** `simplifications.md` entry — Partition density (puzzle 2/broker vs prod 100-200/broker)
+  - `caveats.md #9` — add ELR + share groups + tiered storage to future-bite scenarios
+  - Optional: lesson blurb could mention "Kafka 4.0+ context: KRaft, no Zookeeper" but this risks date-stamping the puzzle
+

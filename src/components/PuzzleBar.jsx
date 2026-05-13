@@ -13,6 +13,7 @@ export default function PuzzleBar({
 }) {
   const hasSolution = typeof puzzle.solution === 'function';
   const hasBackground = Array.isArray(puzzle.background) && puzzle.background.length > 0;
+  const hasSources = Array.isArray(puzzle.sources) && puzzle.sources.length > 0;
   return (
     <header className="puzzle-bar">
       <div className="puzzle-info">
@@ -36,6 +37,21 @@ export default function PuzzleBar({
             {puzzle.background.map((p, i) => (
               <p key={i}>{p}</p>
             ))}
+            {hasSources && (
+              <div className="reading-sources">
+                <h3>Sources</h3>
+                <ul>
+                  {puzzle.sources.map((s) => (
+                    <li key={s.url}>
+                      <a href={s.url} target="_blank" rel="noreferrer noopener">
+                        {s.title}
+                      </a>
+                      {s.note && <span className="reading-sources-note"> — {s.note}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>

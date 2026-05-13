@@ -104,8 +104,9 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 - ✗ Dynamic ISR shrinkage (followers falling behind, rejoining) — requires time-axis sim
 - ✗ Pull-based replication protocol mechanics + high watermark — implementation detail
 - ✗ `unclean.leader.election.enable` toggle — would be straightforward to add as a flag if needed
+- ✗ Eligible Leader Replicas (ELR, KIP-966 preview in Kafka 4.0) — a subset of ISR guaranteed to have data up to the high watermark; we promote "first healthy replica" which is closer to unclean-leader-election semantics. Modeling ELR would require tracking the high watermark per partition.
 
-**What a student should know**: In an interview, the canonical answer is `RF=3, acks=all, min.insync.replicas=2` — and now in our sim, killing 2 of a partition's replicas demonstrates the consequence (writes block). Know the durability-availability tradeoff: `unclean.leader.election=false` favors durability; `=true` favors availability. Real ISR membership is dynamic (replica.lag.time.max.ms); we simplify to "healthy or not."
+**What a student should know**: In an interview, the canonical answer is `RF=3, acks=all, min.insync.replicas=2` — and now in our sim, killing 2 of a partition's replicas demonstrates the consequence (writes block). Know the durability-availability tradeoff: `unclean.leader.election=false` favors durability; `=true` favors availability. Real ISR membership is dynamic (replica.lag.time.max.ms); we simplify to "healthy or not." In Kafka 4.0+, mention ELR (KIP-966) as the next refinement on top of ISR — safer leader election because every elected member is guaranteed to have all committed data.
 
 ---
 
@@ -137,7 +138,11 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 
 **Why we abstract**: Our sim supports the pub/sub pattern via the `pubsub: true` flag on Queue, but it's binary — every out-edge is treated as a separate consumer group. The simulator doesn't model offset state, lag, or rebalancing protocols (cooperative vs eager). It also assumes 1 worker per partition per group (the canonical mapping); real deployments allow N workers in a group where N ≤ partition count, with partition assignment handled by the group coordinator.
 
-**What a student should know**: When asked "how would you add a new downstream system?" the answer is *add a new consumer group with its own offset state* — not modify the producer, not duplicate the topic. Each group's lag is monitored independently. The lesson canvas shows the topology; in a real interview, mention `group.id`, `__consumer_offsets`, and the rebalancing protocol as the next layer of detail.
+**Kafka 4.0+ context — what's new**:
+- **KIP-848 (GA in Kafka 4.0)** — next-generation consumer rebalance protocol. Eliminates stop-the-world rebalances; uses incremental cooperative reassignment. Pre-848: every consumer join/leave paused the entire group. Post-848: only the affected partition's consumer pauses. Mention this if asked "what happens on consumer churn?"
+- **KIP-932 (GA in Kafka 4.0) — Share Groups.** Cooperative consumption gives Kafka *queue-like* semantics: multiple consumers in a share group can pull from the same partition concurrently with at-least-once delivery. This blurs the historical Kafka-vs-RabbitMQ distinction. The senior 2026 answer is: "Kafka can do both consumer groups (pub/sub) AND share groups (queue/work) — pick based on whether ordering matters and whether you want one-message-one-consumer."
+
+**What a student should know**: When asked "how would you add a new downstream system?" the answer is *add a new consumer group with its own offset state* — not modify the producer, not duplicate the topic. Each group's lag is monitored independently. The lesson canvas shows the topology; in a real interview, mention `group.id`, `__consumer_offsets`, and the rebalancing protocol (KIP-848 in 2026) as the next layer of detail. If the interviewer asks about Kafka-vs-RabbitMQ, the modern answer is "with share groups, Kafka covers both patterns."
 
 ---
 
@@ -166,6 +171,38 @@ Pedagogical companion to `caveats.md` (which tracks *build*-decisions). This fil
 **Why we abstract**: Our sim is steady-state; topic reconfiguration is an operational concern, not a throughput one.
 
 **What a student should know**: When asked "how would you handle 10× growth?" the senior answer is *"we over-partitioned at the start"* (because adding partitions live is hazardous), or *"we'd add a new topic with more partitions and dual-write during migration."* Saying "just add partitions" reveals naive ops experience.
+
+---
+
+## 12. Tiered Storage (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's "Workers → Storage LB → DB cluster" is one valid sink architecture: pull events out of Kafka via a consumer group and write them to a downstream database/warehouse. Modern Kafka has a second option built in.
+
+**What we say**: Stream processors consume from Kafka and write to durable storage downstream.
+
+**What's actually going on in production (Kafka 3.9+ / 4.0+)**: **KIP-405 Tiered Storage** (GA in Kafka 3.9) lets a topic transparently offload old log segments to remote object storage (S3, HDFS, Azure Blob, GCS) while keeping recent data on broker-local disk. Configured per-topic via `remote.storage.enable=true`. The broker handles archival; consumers reading old offsets are transparently served from remote storage. This means: for analytics/audit workloads that read historical data, you may not need a separate "Workers → DB" pipeline at all — Kafka itself becomes the long-term store. Local disk holds hot data (recent N days); S3 holds cold data (months/years of retention).
+
+**Why we abstract**: Tiered Storage is an *alternative* sink architecture, not an addition to ours. Modeling it would either (a) duplicate the existing sink-cluster pattern with different labels or (b) require a new "remote storage" primitive on the Queue. The Workers-to-DB pattern still represents a common real-world shape (Kafka → ETL workers → analytics warehouse), so the lesson teaches a valid architecture even if not the newest one.
+
+**What a student should know**: In a 2026 interview, mention tiered storage when discussing retention. The senior answer to "how do you handle 30-day retention of trillions of events?" is *tiered storage with S3 backing*, not *write everything to a separate warehouse via consumer pipeline*. Real production deployments (AWS MSK, Aiven, Confluent Cloud) all support tiered storage now. The Workers-to-DB pattern still applies when you need *transformed* output (joins, aggregations, schema changes); tiered storage applies when you need *the raw log* retained cheaply.
+
+---
+
+## 13. Partition density (Lesson 14 — Kafka)
+
+**Where it shows up**: Lesson 14's canonical has 6 partitions across 3 brokers — 2 partitions per broker. This is *vastly* lower than production density and was chosen for visual legibility on the whiteboard-scale canvas.
+
+**What we say**: 6 partitions split across 3 brokers; each leader Queue + its 2 replicas live on different brokers in a balanced RF=3 layout.
+
+**What's actually going on in production**:
+- **Confluent's 2026 baseline recommendation**: 100-200 partitions per broker as the target, max 4000 per broker before controller overload becomes a risk.
+- **LinkedIn 2024**: ~7 million partitions across ~4000 brokers = average ~1750 partitions per broker. Their largest single cluster has 140 brokers + 1 million replicas.
+- **Cloudflare 2022**: 14 distinct Kafka clusters, ~330 nodes total, processing 1 trillion+ messages.
+- Our 2-per-broker density is ~50-100× below production baseline.
+
+**Why we abstract**: Drawing 100 partitions on a whiteboard is impossible; drawing 6 partitions on the canvas teaches the *pattern* (partition count = parallelism ceiling, distribute across brokers, RF=3 layout). Once a candidate understands the pattern, scaling the number is config.
+
+**What a student should know**: When asked "how do you size partition count for X throughput?", the answer is workload-shaped: target per-partition throughput is ~10MB/s write or ~20MB/s read (rough Confluent rule). For 1GB/s write, you'd need ~100 partitions just to keep partition leaders unsaturated. Cluster-wide max is bounded by broker count (Confluent: 4000 partitions/broker). KRaft (Kafka 4.0) supports significantly higher per-broker partition counts than Zookeeper-based clusters did. *Always over-partition at topic creation* — adding partitions live breaks per-key ordering (see entry #11).
 
 ---
 

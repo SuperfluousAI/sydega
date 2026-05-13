@@ -158,3 +158,55 @@ R1 written from 1 parseable source (Better Programming Medium overview). R2 writ
 - One YouTube transcript attempted (failed; videos remain unparseable)
 
 The R2 proposal reflects 8 parseable sources instead of 1. The architecture didn't change — but the lesson copy depth, the property panel props, and the simplifications.md entries got much sharper.
+
+## R3 amendment — 2026-05-13: Kafka 4.0 era audit
+
+After the puzzle was already implemented at "10/10 visual coverage" (Parts 17-19), operator asked for a fresh audit using new and reliable sources. The Kafka landscape had changed materially with Kafka 4.0 (released March 18, 2025).
+
+Eight additional parseable sources added (see `kafka.md` R3 amendment for the full list):
+- Apache Kafka 4.0.0 Release Announcement (March 2025)
+- Confluent Kafka Scaling Best Practices (2026)
+- Confluent Kafka 4.0 release blog
+- LinkedIn Engineering: Running Kafka at Scale + 7 trillion messages/day post
+- InfoQ: Tales of Kafka at Cloudflare (1 trillion messages)
+- KIP-405 Tiered Storage GA notes
+- KIP-926 acks=min.insync.replicas config proposal
+
+**16 parseable sources total** now backing the puzzle (was 8 in R2, 1 in R1).
+
+### What R3 audited and what changed
+
+**Code changes**: none. The puzzle's modeling is still architecturally accurate against the 2026 canonical answer.
+
+**Doc changes** (all amendments, no rewrites):
+- `componentInfo.kafkaController` — drops "or Zookeeper" ambiguity; explicitly Kafka 4.0/KRaft-only with KIP-966 ELR mentioned in realWorld copy.
+- `simplifications.md #7` — adds ELR (KIP-966) note to the not-modeled list.
+- `simplifications.md #9` — adds Kafka 4.0+ context block covering KIP-848 (new rebalance protocol GA) + KIP-932 (share groups GA, blurs Kafka-vs-RabbitMQ framing).
+- `simplifications.md #12` — NEW: Tiered Storage (KIP-405 GA in Kafka 3.9).
+- `simplifications.md #13` — NEW: Partition density (puzzle 2/broker vs production 100-200/broker; with concrete LinkedIn + Cloudflare + Confluent numbers).
+- `caveats.md #9` — adds 3 new future-bite scenarios (ELR, share groups, tiered storage) with cost-to-fix estimates.
+
+### What R3 confirmed about the puzzle (no change needed)
+
+- **Topology**: producers → router → partitioned topic → consumer groups → sinks. Still the canonical 2026 shape.
+- **RF=3, acks=all, min.insync.replicas=2**: still consensus across Confluent 2026 best practices + 2-Minute Streaming + LinkedIn.
+- **Multi-consumer-group as Kafka differentiator**: still true, even though share groups (KIP-932) add an alternative consumption pattern.
+- **Per-key ordering preserved per partition**: still Apache's official guarantee.
+- **KRaft as the controller**: now strictly correct in Kafka 4.0 (was "KRaft or Zookeeper" pre-4.0).
+- **The "5 reasons Kafka is fast" framing** with TLS-disables-zero-copy nuance: still authoritative per 2-Minute Streaming.
+
+### What R3 decided NOT to add
+
+- **New components on canvas** (e.g., a TieredStorage marker, an ELR marker): scope creep. The architecture works; these are 2026 refinements that belong in deep-dive copy, not whiteboard primitives.
+- **A "Lesson 14b" with tiered storage**: deferred. Could be a future puzzle if there's pedagogical demand; not needed to make Lesson 14 accurate.
+- **Stamping the lesson with "Kafka 4.0+" in the blurb**: would date-stamp the puzzle. The lesson teaches the canonical pattern, which is RF/acks/ISR-stable; we surface the 4.0 specifics in simplifications.md where they age gracefully.
+
+### Provenance status
+
+Sources by tier:
+- **Apache + Confluent official**: 8 (Kafka 4.0 release, Confluent design + replication + efficient-design + scaling-best-practices + developer course, KIP-405, KIP-926, KIP-848 referenced)
+- **Authoritative third-party**: 4 (LinkedIn Engineering ×2, InfoQ Cloudflare, ByteByteGo)
+- **Independent deep dive**: 2 (2-Minute Streaming, Anil Goyal Medium)
+- **Overview**: 2 (Better Programming Medium, Apache intro)
+
+16 of 16 are now parseable. The R3 amendment closes the open-question gap from R2 (where the original Kafka paper was still locked behind a PDF binary). Modern sources cite the paper inline.

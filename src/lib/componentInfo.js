@@ -233,13 +233,15 @@ export const componentInfo = {
   },
   kafkaController: {
     description:
-      'Decorative marker for the Kafka cluster controller (KRaft in modern Kafka; Zookeeper in older deployments). ' +
-      'Coordinates broker membership, leader election, ISR tracking. Pure visual.',
+      'Decorative marker for the Kafka cluster controller quorum (KRaft). Coordinates broker membership, ' +
+      'partition leader election, ISR tracking, topic configs. Pure visual.',
     usage: 'Drop one per cluster to show the control plane exists. Doesn\'t carry data-plane flow.',
     connects: 'Conceptually wires to brokers via a control channel; we don\'t model it. Sim ignores edges.',
     realWorld:
-      'KRaft replaces Zookeeper as of Kafka 3.x — the controller is a Raft-replicated state machine that owns ' +
-      'cluster metadata. Production clusters typically run 3 or 5 controllers for fault tolerance.',
+      'Kafka 4.0 (released March 2025) removed Zookeeper entirely — KRaft is now the only supported mode. ' +
+      'The controller is a Raft-replicated state machine owning cluster metadata. Production clusters run ' +
+      '3 or 5 controllers for fault tolerance. KIP-966 (preview in 4.0) adds Eligible Leader Replicas (ELR) — ' +
+      'a subset of ISR guaranteed to have data up to the high watermark, making leader election safer.',
   },
 };
 

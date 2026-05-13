@@ -259,7 +259,7 @@ We did NOT model sequential I/O, OS page cache, zero-copy, or compression-codec 
 
 ### When This Will Bite
 
-Six scenarios:
+Six scenarios from the original design, plus three Kafka-4.0-era refinements (added 2026-05-13 after a research amendment):
 
 1. **Multiple workers per consumer group with `pubsub: true`** — a player who drops 2 workers in the same group, both wired from the same Queue, will see each worker get the *full* rate from that Queue. In real Kafka, the group coordinator would assign partitions to one consumer per partition; 2 consumers on 1 partition means one stays idle. Our sim has no group coordinator, so it duplicates rather than partitioning the work within the group.
 2. **A future puzzle wants partial pub/sub semantics** — say, "tee" an event stream to 1 work-queue consumer + 1 fan-out consumer group. Our `pubsub` flag is per-Queue, all-or-nothing. Would need per-edge flag or new primitive.
@@ -267,6 +267,9 @@ Six scenarios:
 4. **`unclean.leader.election.enable=true`** — promote any replica, including non-ISR. Our promotion is "first healthy replica with matching `replicaOf`"; we don't distinguish "in-ISR" from "out-of-ISR". A 2-line addition if needed.
 5. **Replication traffic on the leader** — real Kafka replicas pull from the leader, adding bandwidth load. We don't model this. A heavily-replicated topic would have lower effective producer throughput on the leader; we don't capture that.
 6. **Replication edges getting cycled by a player click** — the `handleEdgeClick` in `Canvas.jsx` cycles edge `kind` through read/write/both. If a player clicks a replication edge, it'd flip to a flow edge and lose the dashed style. Cosmetic, but inconsistent.
+7. **Eligible Leader Replicas (ELR, KIP-966 preview in Kafka 4.0)** — ELR is a subset of ISR guaranteed to have data up to the high watermark. Our Phase 3 promotion picks "first healthy replica with matching `replicaOf`" which is closer to *unclean* leader election semantics. Modeling ELR precisely would require tracking each replica's high watermark relative to the leader's — that's per-replica state evolving over time, not just at sim-entry. Not modeled.
+8. **Share groups (KIP-932 GA in Kafka 4.0)** — cooperative consumption gives Kafka *queue-like* semantics: multiple consumers in a share group can pull from the same partition with at-least-once delivery. This blurs the historical Kafka-vs-RabbitMQ split that our `pubsub: true` flag encodes. To model share groups, we'd need a third Queue mode beyond "work-queue" (Lesson 8 default) and "pub/sub" (Lesson 14 default) — something like "shared" where multiple consumers can pull from one Queue with at-least-once semantics. The lesson's framing ("Kafka = pub/sub, RabbitMQ = work-queue") is now a simplification.
+9. **Tiered Storage (KIP-405 GA in Kafka 3.9)** — modern Kafka can transparently offload old log segments to S3/HDFS, making Kafka itself a long-term store. Our "Workers → Storage LB → DB cluster" sink is one valid architecture, but the 2026 alternative is *no sink pipeline* — just enable `remote.storage.enable=true` on the topic and let Kafka archive itself. Our puzzle teaches the consumer-pulls-and-writes pattern, which is still common for *transformed* output but not the only way.
 
 ### What We Do When That Scenario Arrives
 
@@ -281,6 +284,12 @@ Six scenarios:
 **For 5 (replication traffic):** model leader → replica as real flow edges (not decorative); each replica has capacity. Pulls a percentage of leader throughput. Significant primitive change — replicas become semi-decorative.
 
 **For 6 (edge-kind click cycle):** add a guard in `handleEdgeClick` to skip cycling when `kind === 'replication'`. ~5 LOC.
+
+**For 7 (ELR):** track a `highWatermark` field per replica + per partition in the sim state. Promotion logic checks "is candidate's HW ≥ leader's HW?" before promoting. Significant primitive change because HW is per-event, not per-second; would need event-stream sim or a static "everyone's caught up" abstraction.
+
+**For 8 (share groups):** introduce a third Queue fanout mode beyond `pubsub` — `consumptionMode: 'workqueue' | 'pubsub' | 'shared'`. In `shared` mode, downstream out-edges share the rate (like work-queue) but at-least-once semantics mean retries cost extra capacity. Simulator change is moderate; UI implications minor.
+
+**For 9 (tiered storage):** add `remoteStorage: true` config on Queue. When set, the Queue itself becomes a sink for retention purposes — drop the "Workers → DB" requirement. Could become a new lesson primitive ("Lesson 14b: Kafka with Tiered Storage") rather than retrofitting Lesson 14.
 
 ---
 

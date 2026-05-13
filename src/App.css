@@ -621,6 +621,38 @@
 .reading-inline p:last-child {
   margin-bottom: 0;
 }
+.reading-sources {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.reading-sources h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #9ca3af);
+}
+.reading-sources ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.reading-sources li {
+  margin-bottom: 6px;
+}
+.reading-sources a {
+  color: #7dd3fc;
+  text-decoration: underline;
+}
+.reading-sources a:hover {
+  color: #bae6fd;
+}
+.reading-sources-note {
+  color: var(--muted, #9ca3af);
+  font-size: 12px;
+}
 
 /* Edge animations driven by arrow direction (see FloatingEdge.jsx).
    The visible path picks one of these classes based on arrows.{source,target}.
