@@ -236,6 +236,22 @@ export const componentInfo = {
       'AWS S3, Google Cloud Storage, Azure Blob, Dropbox Magic Pocket. Real deployments have 11+ nines of durability via ' +
       'replication + erasure coding. Often the cheapest tier in storage cost; presigned URLs are the load-bearing pattern.',
   },
+  'database:searchIndex': {
+    description:
+      'A read-optimized inverted index — full-text search, faceted query, relevance ranking. Architecturally distinct ' +
+      'from a relational metadata DB: it\'s a derivative store fed by an async indexing pipeline (CDC → Kafka → workers → index).',
+    usage:
+      'Default capacity 10,000 req/s, latency 5ms. Reads are sub-10ms (in-memory inverted index); writes come from the ' +
+      'indexing pipeline, not the application directly. Shard across 3+ nodes behind a Load Balancer; the LB is also the ' +
+      'coordinating-query layer that fans out to shards and merges results.',
+    connects:
+      'Reads: wires from a Search Service (coordinating node) or a search cache (on miss). ' +
+      'Writes: wires from indexing Workers that consume change events from the auth store. Never written to directly by app code.',
+    realWorld:
+      'ElasticSearch, OpenSearch, Solr. Stores documents as immutable Lucene segments; updates are slower than inserts ' +
+      'because of segment merges + soft deletes. Eventually consistent with the auth store — typical indexing lag is ' +
+      '1-5 seconds. Used for product search, log search (ELK), and any "find me the X that contain Y" workload.',
+  },
   readReplica: {
     description: 'A read-only copy of the Database. Scales read capacity, but cannot accept writes.',
     usage:

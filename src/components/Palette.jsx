@@ -14,6 +14,43 @@ function entryKey(entry) {
   return role ? `${type}:${role}` : type;
 }
 
+// Build a tight DOM "ghost" used as the HTML5 drag image so the player sees
+// a card that resembles the canvas node, not the full palette-item button.
+// Positioned off-screen until setDragImage snapshots it, then removed on
+// the next frame (the browser caches the bitmap so removing it doesn't
+// disturb the in-flight drag).
+function makeDragGhost(meta) {
+  if (!meta || typeof document === 'undefined') return null;
+  const el = document.createElement('div');
+  el.style.cssText = [
+    'position: absolute',
+    'top: -1000px',
+    'left: -1000px',
+    'display: inline-flex',
+    'align-items: center',
+    'gap: 8px',
+    'padding: 8px 12px',
+    'background: #1a1a2e',
+    `border: 2px solid ${meta.color || '#888'}`,
+    `border-left: 6px solid ${meta.color || '#888'}`,
+    'border-radius: 8px',
+    'color: #e6e6f5',
+    'font-size: 13px',
+    'font-weight: 600',
+    'font-family: system-ui, -apple-system, sans-serif',
+    'box-shadow: 0 6px 18px rgba(0,0,0,0.55)',
+    'white-space: nowrap',
+    'pointer-events: none',
+  ].join(';');
+  const dot = document.createElement('span');
+  dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${meta.color || '#888'}`;
+  const label = document.createElement('span');
+  label.textContent = meta.label || '';
+  el.appendChild(dot);
+  el.appendChild(label);
+  return el;
+}
+
 // Flatten componentTypes into a palette-entry list, expanding role-aware
 // types (like `service`) into one entry per role. Used by the More-
 // components section so the player can grab anything regardless of whether
@@ -36,6 +73,8 @@ export default function Palette({
   completedPuzzleIds = [],
   collapsed = false,
   onToggleCollapse,
+  autoStack = true,
+  onToggleAutoStack,
 }) {
   // Per-type drag-time flags. Today only "prepopulate" exists, for Computer.
   // If a future component needs its own flag, generalize this.
@@ -55,6 +94,18 @@ export default function Palette({
       event.dataTransfer.setData('application/sdgame-prepopulate', '1');
     }
     event.dataTransfer.effectAllowed = 'move';
+    // Browser default: the drag image is a screenshot of the source element
+    // (the entire palette-item button). Replace it with a tight chip that
+    // looks like the node that will land on canvas — color dot + label.
+    const ghost = makeDragGhost(paletteMetaFor(entry));
+    if (ghost) {
+      document.body.appendChild(ghost);
+      event.dataTransfer.setDragImage(ghost, 10, 10);
+      // setDragImage snapshots the element immediately; remove on next frame.
+      requestAnimationFrame(() => {
+        if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
+      });
+    }
   };
 
   const allowedKeys = new Set(puzzle.allowedComponents.map(entryKey));
@@ -112,6 +163,19 @@ export default function Palette({
 
       <h2 className="panel-title" style={{ marginTop: 20 }}>Components</h2>
       <p className="panel-hint">Drag onto the canvas. Wire output → input.</p>
+      {onToggleAutoStack && (
+        <label
+          className="palette-auto-stack"
+          title="When ON, children inside a container snap to a 20px grid and the container resizes to fit. Leave gaps between components for arrow clarity — auto-stack doesn't crunch them together."
+        >
+          <input
+            type="checkbox"
+            checked={autoStack}
+            onChange={onToggleAutoStack}
+          />
+          <span>Auto-stack inside containers</span>
+        </label>
+      )}
       <div className="palette-items">
         {puzzle.allowedComponents.map((entry) => {
           const { type, role } = parsePaletteEntry(entry);

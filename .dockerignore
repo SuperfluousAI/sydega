@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+.vscode
+.idea
+*.log
+.DS_Store
+journal.md
+puzzle-research/
+caveats.md
+simplifications.md
+moat.md
+research.md
+deploy/

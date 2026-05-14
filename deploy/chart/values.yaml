@@ -1,0 +1,65 @@
+# sydega — systems design game
+#
+# Static SPA. Vite-built `dist/` served by nginx (port 8080). No backend,
+# no DB, no API keys. Scale-to-zero is on — KEDA wakes a pod on the first
+# request after idle.
+
+app:
+  name: sydega
+  subdomain: sydega                  # → https://sydega.superfluous.ai
+
+  image:
+    # Pushed by the local build (`docker buildx` → ECR). Bump the tag on
+    # every build; ECR has tag immutability so no two builds share a tag.
+    repository: 596633517329.dkr.ecr.us-east-1.amazonaws.com/superfluous-apps
+    tag: sydega-0.1.0-placeholder    # overwritten by the build script
+    pullPolicy: IfNotPresent
+
+  # nginx in the Dockerfile listens on 8080 (non-root user can't bind 80).
+  # The platform's Service maps :80 → containerPort:8080.
+  port: 8080
+
+  # Static app — minimal resources. Mirrors the greeting / homepage profile.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+      ephemeralStorage: 100Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+      ephemeralStorage: 500Mi
+
+  # KEDA scale-to-zero. No persistent state in the app; cold starts ~3s
+  # are fine for an educational tool.
+  scaleToZero:
+    enabled: true
+    cooldownSeconds: 60
+    maxReplicas: 3
+
+  # Health probe served by nginx (see nginx.conf in the source repo).
+  healthCheck:
+    readiness:
+      path: /healthz
+      port: 8080
+    liveness:
+      path: /healthz
+      port: 8080
+
+  # No environment config needed — the app is fully static.
+  config: {}
+
+  # Tighten the per-namespace quota to match the small footprint.
+  quota:
+    requests:
+      cpu: "500m"
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+    pods: "5"
+
+  # Gateway API (the platform default). HTTPRoute lands in the apps namespace.
+  gateway:
+    name: superfluous-gateway
+    namespace: apps

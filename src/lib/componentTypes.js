@@ -384,11 +384,11 @@ export const componentTypes = {
     },
   },
   // Database is role-aware: `metadata` (relational / OLTP — the default; what
-  // Lessons 6-17 use) and `blob` (object store like S3 / Magic Pocket —
-  // introduced in Lesson 18). Sim semantics are identical for both: a sink
-  // that accepts reads + writes up to capacity. Visual + label + defaults
-  // differ so the architecture-layer story (metadata-tier vs blob-tier) is
-  // legible on canvas. Cache uses the same role pattern (internal / cdn).
+  // Lessons 6-17 use), `blob` (object store like S3 / Magic Pocket — L18),
+  // and `searchIndex` (ElasticSearch / OpenSearch — L19.2). Sim semantics are
+  // identical: a sink that accepts reads + writes up to capacity. Visual +
+  // label + defaults differ so the architecture-layer story (metadata-tier
+  // vs blob-tier vs search-tier) is legible on canvas.
   database: {
     role: 'sink',
     acceptsReads: true,
@@ -417,6 +417,17 @@ export const componentTypes = {
         // per logical bucket; per-object latency is higher than a relational
         // DB (network hops + chunk reconstruction).
         defaults: { capacity: 10_000, latency: 80, p99Latency: 240 },
+      },
+      searchIndex: {
+        label: 'Search Index',
+        color: '#f59e0b',
+        // ElasticSearch / OpenSearch / Solr: read-optimized inverted index.
+        // Sustains much higher read throughput than a relational metadata
+        // DB at the same hardware (10-50x). Writes come through the async
+        // indexing pipeline so the puzzle still uses the standard
+        // accepts-reads/accepts-writes sim path. Eventually-consistent
+        // with the auth store (lag is the cost of async indexing).
+        defaults: { capacity: 10_000, latency: 5, p99Latency: 30 },
       },
     },
   },

@@ -1801,6 +1801,449 @@ export const puzzles = {
       ],
     }),
   },
+
+  ecommerceAtScale: {
+    id: 'ecommerceAtScale',
+    order: 19,
+    title: 'E-Commerce at Scale (Design Amazon)',
+    slug: 'Design an Amazon-class e-commerce site. Three workloads with different consistency regimes + an async saga at checkout.',
+    blurb:
+      'Design an e-commerce backend that serves a 100:10:1 browse-vs-cart-vs-checkout workload from one canvas. The architecture-layer answer is THREE sync flows with different consistency regimes — (1) catalog browsing at 10,000 ops/sec, 98% reads, AP/eventually consistent, absorbed by a CDN at the edge + an internal cache in front of a sharded catalog DB; (2) cart at 1,000 ops/sec, AP-biased (Werner Vogels: "we always want to honor cart adds — revenue producing"), cache + DB cluster; (3) checkout at 100 ops/sec, CP/strongly consistent, writes hit an Order Service that posts to an Order Queue. The Queue uses `pubsub: true` so each order event fans out to THREE consumer groups (inventory, payment, notification) running the saga in parallel. Idempotency keys + compensating transactions + flash-sale contention live in the lesson copy + simplifications.md (talk-track, not canvas).',
+    background: [
+      'What this lesson teaches well — on the canvas. Three distinct request streams share one backend with three distinct bottleneck stories: browse (read-heavy, CDN+cache absorbs, sharded DB serves the long tail), cart (balanced read/write, AP-biased, cache+DB), checkout (writes-only, hits a pubsub Queue and triggers an async saga). The three flows have three different consistency regimes — and you can see all three on the canvas.',
+      'Cart = AP, Order = CP — the Werner Vogels framing. "[For the shopping cart] we always want to honor requests to add items… it\'s revenue producing. In this case you choose high availability — errors are hidden from the customer and sorted out later." Same customer, same site, but the system biases toward AP for cart edits and CP for order submission. Multiple downstream services (inventory, payment, notification) need to see the same authoritative state when an order lands. This is a textbook example of the consistency-availability trade-off applied per-feature, not per-system.',
+      'The pubsub Queue as a saga substrate. When checkout happens, the Order Service writes ONE event to the Order Queue. With `pubsub: true` (same mechanic as Lesson 17 — Kafka topics with multiple consumer groups), three downstream worker pools each see the full event stream: one runs inventory reservation, one runs payment, one runs notifications. This is the choreography flavor of the saga pattern. If payment fails, the Payment Worker publishes a compensation event that the others react to (compensating-transaction logic is talk-track, not on canvas).',
+      'Why the workload numbers are what they are. Real Amazon: 300M+ products, ~1.5M orders/day, billions of catalog reads/day. Our 10,000 browse + 1,000 cart + 100 checkout is whiteboard scale. The PROPORTIONS are what matter: browse ≫ cart ≫ checkout. Each Order triggers a fan-out of 3 saga events, so the async load is 300 jobs/sec. Same proportions hold from whiteboard to Amazon — in a real interview, walk through capacity math at the rate the interviewer asks for; the architecture stays the same.',
+      'Extra extra — patterns we DO draw vs do NOT draw. Drawn: pubsub Queue + consumer groups (Lesson 17), CDN at edge + internal Cache (Lessons 7+14), sharded DB cluster behind LB (Lesson 10), R/W edge split (Lesson 8). NOT drawn: idempotency keys for payment retries (Stripe pattern), compensating transactions / saga rollback, product search (ElasticSearch / OpenSearch — same cache-fronted DB pattern as catalog), recommendations (pre-computed cache, refreshed offline by Spark/Hadoop), flash-sale contention (purchase tokens, partitioned inventory locks). All five are in `simplifications.md` — senior-level talk-track, not whiteboard items.',
+      'Soft caveat — single-region modeling. Real Amazon spans multiple regions for DR + geographic latency. Our canvas models one region. The patterns transfer (LB + cluster scale within a region; cross-region adds a layer of replication mechanics we don\'t represent here). For an interview, mention "we\'d also add multi-region active-passive with cross-region replication for the Order/Inventory DBs" as a follow-up when asked about availability. The Regional/SRE track is on the roadmap.',
+      'Where to dig further. Research is in `puzzle-research/ecommerce.md` (8 parseable sources including the Werner Vogels CAP-theorem trade-off interview, microservices.io\'s canonical saga pattern reference, Stripe\'s idempotency blog post, and HelloInterview\'s multi-step-processes pattern). Architecture vs production-reality: HelloInterview / SystemDesignHandbook teach the canonical microservices answer; the highscalability.com Werner Vogels piece explains WHY Amazon biased cart toward AP and checkout toward CP. Both belong in a senior-level answer.',
+    ],
+    sources: [
+      { title: 'Highscalability — Amazon Architecture (Werner Vogels)', url: 'https://highscalability.com/amazon-architecture/', note: 'Cart = AP, Checkout = CP — the CAP-theorem trade-off applied per-feature' },
+      { title: 'microservices.io — Saga Pattern', url: 'https://microservices.io/patterns/data/saga.html', note: 'Canonical saga reference: choreography vs orchestration, compensating transactions' },
+      { title: 'Stripe Engineering — Designing Robust APIs (Idempotency)', url: 'https://stripe.com/blog/idempotency', note: 'Idempotency keys for payment retries; exponential backoff + jitter' },
+      { title: 'CodeKarle — Amazon System Design', url: 'https://www.codekarle.com/system-design/Amazon-system-design.html', note: 'Full service decomposition + pre-deduction inventory + Redis-with-TTL reconciliation' },
+      { title: 'Hello Interview — Multi-step Processes Pattern', url: 'https://www.hellointerview.com/learn/system-design/patterns/multi-step-processes', note: 'How to handle multi-step e-commerce flows with sagas + workflow systems (Temporal, Cadence)' },
+      { title: 'systemdesignhandbook.com — Design E-Commerce System', url: 'https://www.systemdesignhandbook.com/guides/design-e-commerce-system-design/', note: 'Consistency boundaries explicit: strong for money/orders/inventory, eventual for catalog/cart/search/recs' },
+      { title: 'Medium / Siddhi Gaikwad — Saga in E-Commerce Checkout', url: 'https://medium.com/@siddhi.gaikwad.iitb/understanding-the-saga-design-pattern-through-an-e-commerce-checkout-flow-65eb015e8654', note: 'Three-step saga walkthrough with compensation map' },
+      { title: 'IGotAnOffer — Amazon System Design Interview Guide', url: 'https://igotanoffer.com/en/advice/amazon-system-design-interview', note: 'Interview-format context for Amazon system design questions' },
+    ],
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'loadBalancer',
+      { type: 'cache', role: 'cdn' },
+      { type: 'cache', role: 'internal' },
+      { type: 'service', role: 'appServer' },
+      { type: 'service', role: 'worker' },
+      'queue',
+      { type: 'database', role: 'metadata' },
+    ],
+    initialNodes: () => [
+      node('browse-clients', 'client', { x: 40, y: 100 }, { rps: 10000, readRatio: 1.0 }),
+      node('cart-clients', 'client', { x: 40, y: 400 }, { rps: 1000, readRatio: 0.5 }),
+      node('checkout-clients', 'client', { x: 40, y: 700 }, { rps: 100, readRatio: 0 }),
+    ],
+    requirements: [
+      {
+        key: 'syncSuccess',
+        label: 'Sync success rate ≥ 99% across all three workloads',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          '10,000 browse + 1,000 cart + 100 checkout = 11,100 ops/sec sync-side. Drop one of: the CDN (catalog tier melts under raw browse), the catalog cache (sharded DB sees 1,000/sec — over the per-shard cap), the cart cache (cart DB doubles up on reads), or the Order Queue (checkout latency balloons + chain failures cascade) — and success rate falls.',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (saga fan-out drains)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'Order events fan out to three saga concerns (inventory, payment, notification). With `pubsub: true` on the Order Queue and 3 consumer groups, totalBackgroundAttempted = 100 × 3 = 300. Each consumer group\'s worker pool needs to drain 100/sec into its sink.',
+      },
+      {
+        key: 'hasCdn',
+        label: 'Has a CDN at the edge (absorbs browse)',
+        predicate: { kind: 'presence', type: 'cache', role: 'cdn', min: 1 },
+        lesson:
+          'Browse at 10,000 ops/sec would melt the catalog tier if served from origin. A CDN at the edge with 90% hit rate reduces origin load to 1,000/sec — comfortable for the catalog service cluster.',
+      },
+      {
+        key: 'hasCatalogCache',
+        label: 'Has an internal Cache (absorbs catalog reads)',
+        predicate: { kind: 'presence', type: 'cache', role: 'internal', min: 1 },
+        lesson:
+          'Even after the CDN absorbs 90% of browse, 1,000 reads/sec still hit the catalog service tier. Without an internal cache, those 1,000 reads all hit the sharded catalog DB cluster — over the per-shard cap. An internal cache at 85% hit rate reduces DB read load to ~150/sec.',
+      },
+      {
+        key: 'hasCatalogShards',
+        label: 'Catalog DB cluster: 3+ databases tagged role:metadata',
+        predicate: { kind: 'presence', type: 'database', role: 'metadata', min: 3 },
+        lesson:
+          'Even at 150 reads/sec (after the cache), one DB would be a single point of failure. Three sharded DBs behind a load balancer spread load and survive a single node failure. Tag each with role: metadata.',
+      },
+      {
+        key: 'hasOrderQueue',
+        label: 'Has a Queue (for async order fan-out)',
+        predicate: { kind: 'presence', type: 'queue', min: 1 },
+        lesson:
+          'Checkout writes hit an Order Queue so the saga runs async. Without a queue, checkout latency = sum of all downstream steps (reserve inventory + charge payment + notify) and a failure mid-chain cascades back to the user. The queue makes checkout snappy and tolerates downstream wobbles.',
+      },
+      {
+        key: 'hasSagaConsumerGroups',
+        label: 'At least 3 consumer groups for the saga (inventory + payment + notification)',
+        predicate: { kind: 'metric', name: 'consumerGroupCount', op: '>=', value: 3 },
+        lesson:
+          'The order saga has three concerns: reserve inventory, charge payment, fire notifications. Each gets its own Worker pool with a distinct consumerGroup tag (e.g. "inventory-saga", "payment-saga", "notification-saga"). With the Order Queue\'s `pubsub: true` flag, every order event reaches every consumer group independently — same Kafka mechanic as Lesson 17.',
+      },
+    ],
+    solution: () => ({
+      // === Workload + capacity math (verified) ===
+      //
+      // Browse path (10,000 r/s, 100% reads):
+      //   → cdn (cap 50000, hit 0.9) absorbs 9000; 1000 miss
+      //   → browse-lb (cap 2000) → catalog-svc × 2 (cap 2000 each)
+      //   each catalog-svc: 500 reads
+      //   → catalog-cache (cap 5000, hit 0.85) absorbs 850
+      //   150 miss → catalog-db-lb (cap 1000)
+      //   → 3 catalog DBs (cap 300 each) — 50 each (cap 300 ✓)
+      //
+      // Cart path (1,000 r/s, 50/50):
+      //   → cart-svc (cap 1500): 500 reads + 500 writes
+      //   reads → cart-cache (cap 2000, hit 0.7) absorbs 350; 150 miss
+      //   writes → cart-cache (pass-through) → cart-db
+      //   cart-db sees 150 reads + 500 writes = 650 ops/s (cap 1500 ✓)
+      //
+      // Checkout path (100 w/s, all writes):
+      //   → order-svc (cap 200) → order-queue (pubsub:true, accepts 100 ✓)
+      //
+      // Async (saga fan-out via pubsub):
+      //   order-queue with out-degree 3 → totalBackgroundAttempted = 100 × 3 = 300
+      //   each worker (cap 200) drains its 100/s feed
+      //   each sink DB (cap 200) accepts 100 ✓
+      //   totalBackgroundServed = 300 → 100% ✓
+      nodes: [
+        // ─── Producers ─────────────────────────────────────────────────
+        node('browse-clients', 'client', { x: 40, y: 100 }, { rps: 10000, readRatio: 1.0 }),
+        node('cart-clients', 'client', { x: 40, y: 400 }, { rps: 1000, readRatio: 0.5 }),
+        node('checkout-clients', 'client', { x: 40, y: 700 }, { rps: 100, readRatio: 0 }),
+
+        // ─── Browse tier ──────────────────────────────────────────────
+        node('cdn', 'cache', { x: 240, y: 100 }, { role: 'cdn', capacity: 50000, hitRate: 0.9 }),
+        node('browse-lb', 'loadBalancer', { x: 440, y: 100 }, { capacity: 2000 }),
+        node('catalog-svc-0', 'service', { x: 640, y: 40 }, { role: 'appServer', capacity: 2000 }),
+        node('catalog-svc-1', 'service', { x: 640, y: 160 }, { role: 'appServer', capacity: 2000 }),
+        node('catalog-cache', 'cache', { x: 840, y: 100 }, { role: 'internal', capacity: 5000, hitRate: 0.85 }),
+        node('catalog-db-lb', 'loadBalancer', { x: 1040, y: 100 }, { capacity: 1000 }),
+        node('catalog-db-0', 'database', { x: 1240, y: 20 }, { role: 'metadata', capacity: 300 }),
+        node('catalog-db-1', 'database', { x: 1240, y: 120 }, { role: 'metadata', capacity: 300 }),
+        node('catalog-db-2', 'database', { x: 1240, y: 220 }, { role: 'metadata', capacity: 300 }),
+
+        // ─── Cart tier ────────────────────────────────────────────────
+        node('cart-svc', 'service', { x: 440, y: 400 }, { role: 'appServer', capacity: 1500 }),
+        node('cart-cache', 'cache', { x: 640, y: 400 }, { role: 'internal', capacity: 2000, hitRate: 0.7 }),
+        node('cart-db', 'database', { x: 840, y: 400 }, { role: 'metadata', capacity: 1500 }),
+
+        // ─── Checkout tier + saga ────────────────────────────────────
+        node('order-svc', 'service', { x: 440, y: 700 }, { role: 'appServer', capacity: 200 }),
+        node('order-queue', 'queue', { x: 640, y: 700 }, { topic: 'order-events', pubsub: true }),
+        node('inventory-worker', 'service', { x: 840, y: 600 }, { role: 'worker', capacity: 200, consumerGroup: 'inventory-saga' }),
+        node('payment-worker', 'service', { x: 840, y: 720 }, { role: 'worker', capacity: 200, consumerGroup: 'payment-saga' }),
+        node('notification-worker', 'service', { x: 840, y: 840 }, { role: 'worker', capacity: 200, consumerGroup: 'notification-saga' }),
+        node('inventory-db', 'database', { x: 1040, y: 600 }, { role: 'metadata', capacity: 200 }),
+        node('payment-gateway', 'database', { x: 1040, y: 720 }, { role: 'metadata', capacity: 200 }),
+        node('notification-sink', 'database', { x: 1040, y: 840 }, { role: 'metadata', capacity: 200 }),
+      ],
+      edges: [
+        // Browse path
+        edge('browse-clients', 'cdn'),
+        edge('cdn', 'browse-lb'),
+        edge('browse-lb', 'catalog-svc-0'),
+        edge('browse-lb', 'catalog-svc-1'),
+        edge('catalog-svc-0', 'catalog-cache'),
+        edge('catalog-svc-1', 'catalog-cache'),
+        edge('catalog-cache', 'catalog-db-lb'),
+        edge('catalog-db-lb', 'catalog-db-0'),
+        edge('catalog-db-lb', 'catalog-db-1'),
+        edge('catalog-db-lb', 'catalog-db-2'),
+
+        // Cart path
+        edge('cart-clients', 'cart-svc'),
+        edge('cart-svc', 'cart-cache'),
+        edge('cart-cache', 'cart-db'),
+
+        // Checkout + saga fan-out (pubsub queue × 3 consumer groups)
+        edge('checkout-clients', 'order-svc'),
+        edge('order-svc', 'order-queue'),
+        edge('order-queue', 'inventory-worker'),
+        edge('order-queue', 'payment-worker'),
+        edge('order-queue', 'notification-worker'),
+        edge('inventory-worker', 'inventory-db'),
+        edge('payment-worker', 'payment-gateway'),
+        edge('notification-worker', 'notification-sink'),
+      ],
+    }),
+  },
+
+  flashSaleAtScale: {
+    id: 'flashSaleAtScale',
+    order: 19.1,
+    title: 'Flash Sale Spike (Bulkhead a Hot SKU)',
+    slug: 'Follow-up to L19: a 500 r/s flash-sale spike for a hot SKU melts the shared order tier. Protect normal checkout by giving the spike its own lane.',
+    blurb:
+      'This is a follow-up to Lesson 19. The full e-commerce canvas is pre-populated — your job is the spike. A flash-sale launch (PS5, concert tickets, viral SKU) drives 500 r/s of order intents for ONE product. Wired into the shared Order Service, that spike will starve normal checkout traffic — the Order Svc capacity (cap 200) gets crushed and 80% of orders drop. The pattern: BULKHEAD the flash-sale traffic into its own lane (separate Queue + Worker + DB) so the spike can\'t cascade into normal checkout. Plus a RATE LIMITER at the gateway returns 429 to most flash-sale visitors (the architecture says "most are turned away by design — there\'s only one PS5 left"). Background success ≥ 99% and total sync ≥ 95% (the rate-limiter\'s 429s ARE expected drops).',
+    background: [
+      'What this lesson teaches well — on the canvas. Bulkheading (give the spike its own lane so it can\'t starve the shared resources) + rate limiting (throttle the input below downstream capacity, accept that most visitors get 429). Both patterns are real-world flash-sale architecture — used by Ticketmaster, Sony PlayStation Direct, every concert-on-sale system. The teaching is "isolate the hot lane + admit only what downstream can serve."',
+      'The Werner Vogels framing for spikes. A flash-sale spike is the inverse of cart\'s AP-bias: it\'s a deliberate AVAILABILITY rejection. The system EXPLICITLY says "we cannot serve you" (HTTP 429 Too Many Requests) to 60-80% of flash-sale visitors, because the inventory only exists for 100 customers. The pedagogical insight: dropping requests is NOT a system failure — it\'s the correct response to an unservable spike. Real Ticketmaster shows a waiting room with a "your turn" position; same idea, friendlier UX.',
+      'Why bulkhead + rate-limit, not just rate-limit. Imagine you only added the Rate Limiter (no bulkhead): the admitted flash-sale traffic still flows through the SHARED Order Service. Even after the limiter trims it down, the shared queue + workers see TWO competing event streams (normal + flash) — and the saga workers (cap 200 each) get squeezed. With BULKHEAD too, the flash-sale lane has its own queue + worker + DB; normal checkout\'s saga is mathematically untouched. This is the difference between throttling INPUT and isolating BLAST RADIUS.',
+      'Patterns NOT shown — talk-track only. (1) Purchase tokens / waiting room: visitors request a token; only the first N get one; the rest see a queue position. Conceptually similar to rate-limiter + queue, but with a visible UX. (2) Partitioned inventory locks: the 100-unit count split across 10 partitions; each partition has its own lock, distributing contention. Real-world for very-hot SKUs at very-high scale. (3) Optimistic concurrency on inventory rows (version counters + conditional update). All three appear in simplifications.md.',
+      'Why the success-rate threshold is 95% not 99%. Rate-limiter drops are intentional. 500 r/s spike with a 200 r/s admission cap means 60% of flash-sale visitors get 429 — they are turned away, by design. The combined sync success rate works out to 97.4% (L19\'s 11,100 of 11,100 + flash\'s 200 of 500). Setting the bar at 95% accepts the deliberate drops; setting it at 99% would force you to admit ALL flash traffic (which would melt inventory). The 95% threshold is HOW you encode "drops are OK here" in the puzzle math.',
+      'Soft caveat — single-region modeling. Real flash-sale architecture often combines multi-region routing (some regions absorb the spike, some don\'t) with token systems. We model single-region. The bulkhead + rate-limit patterns transfer to multi-region; cross-region adds DNS / geo-routing layers.',
+      'Where to dig further. Research is in `puzzle-research/ecommerce.md` (the systemdesignhandbook source has the explicit flash-sale section: "Flash sales require partitioning, queueing, or purchase tokens to manage contention"). Real-world deep dives: Ticketmaster\'s queue-it integration, Shopify\'s flash-sale stack ("BFCM live map"), the Werner Vogels Amazon CAP-theorem framing applied to spikes.',
+    ],
+    sources: [
+      { title: 'systemdesignhandbook.com — Design E-Commerce System (flash-sale section)', url: 'https://www.systemdesignhandbook.com/guides/design-e-commerce-system-design/', note: 'Explicit: "Flash sales require partitioning, queueing, or purchase tokens to manage contention"' },
+      { title: 'Highscalability — Amazon Architecture (Werner Vogels CAP)', url: 'https://highscalability.com/amazon-architecture/', note: 'The "explicit availability rejection" framing — dropping is a valid system response' },
+      { title: 'Hello Interview — Multi-step Processes Pattern', url: 'https://www.hellointerview.com/learn/system-design/patterns/multi-step-processes', note: 'Saga / workflow context that the flash lane mirrors at smaller scale' },
+      { title: 'Stripe Engineering — Designing Robust APIs (Idempotency + retries)', url: 'https://stripe.com/blog/idempotency', note: 'Rate-limited retries with exponential backoff — same primitive used by waiting-room systems' },
+    ],
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'rateLimiter',
+      'loadBalancer',
+      { type: 'cache', role: 'cdn' },
+      { type: 'cache', role: 'internal' },
+      { type: 'service', role: 'appServer' },
+      { type: 'service', role: 'worker' },
+      'queue',
+      { type: 'database', role: 'metadata' },
+    ],
+    initialNodes: () => {
+      // Pre-populate the full L19 canvas (so the student starts from a
+      // working e-commerce backend) PLUS a new unwired flash-sale client
+      // group representing the spike. The student's job is to add the flash
+      // lane (rate limiter + queue + worker + DB), not rebuild L19.
+      const l19 = puzzles.ecommerceAtScale.solution();
+      return [
+        ...l19.nodes,
+        node('flash-sale-clients', 'client', { x: 40, y: 1020 }, { rps: 500, readRatio: 0 }),
+      ];
+    },
+    initialEdges: () => puzzles.ecommerceAtScale.solution().edges,
+    requirements: [
+      {
+        key: 'syncSuccess',
+        label: 'Sync success rate ≥ 95% (rate-limiter drops are expected)',
+        test: (r) => r.successRate >= 0.95,
+        lesson:
+          'Flash-sale rejections are INTENTIONAL — most visitors get 429 because the inventory only exists for ~100 customers. The 95% threshold accepts the rate-limiter drops; setting it at 99% would force you to admit all 500 r/s (which would melt the inventory worker).',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (saga + flash worker drain)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'The L19 saga (300 jobs/sec from 100 orders × 3 consumer groups) plus the flash inventory worker (200 jobs/sec from admitted flash orders) must all drain. If the flash lane isn\'t bulkheaded, the saga workers compete with flash for the same 200 cap and drop saga events.',
+      },
+      {
+        key: 'hasFlashRateLimiter',
+        label: 'Has a Rate Limiter (throttle the flash spike at the gateway)',
+        predicate: { kind: 'presence', type: 'rateLimiter', min: 1 },
+        lesson:
+          'Without admission control, 500 r/s of flash traffic hits whatever you wired it to and either melts that component or competes with normal traffic. A Rate Limiter at the gateway caps the spike to ~200 r/s (matching downstream capacity) and returns 429 Too Many Requests for the rest. This is real flash-sale architecture — Ticketmaster + PlayStation Direct + Shopify all do this.',
+      },
+      {
+        key: 'hasFlashLane',
+        label: 'Bulkheaded flash lane: at least 2 Queues on the canvas',
+        predicate: { kind: 'presence', type: 'queue', min: 2 },
+        lesson:
+          'Bulkheading = give the flash-sale spike its own Queue + Worker + DB so it can\'t contend with the shared saga workers. With one queue (the L19 Order Queue): admitted flash traffic still fans out through the same 3 saga workers, squeezing normal checkout. With two queues (Order Queue + Flash Queue), the flash worker drains independently and the L19 saga is untouched.',
+      },
+    ],
+    solution: () => {
+      // Inherit L19 canonical entirely, then ADD the flash lane:
+      //   flash-sale-clients (500 r/s)
+      //     → flash-rate-limiter (cap 200, drops 300 at 429)
+      //     → flash-order-queue (work-queue; not pubsub — single consumer)
+      //     → flash-inventory-worker (cap 200, group 'flash-inventory')
+      //     → flash-inventory-db (cap 200)
+      //
+      // Sync math:
+      //   L19 paths unchanged: 11,100 served / 11,100 attempted
+      //   Flash: 500 attempted → 200 admitted by rate limiter → 200 enqueued
+      //   Combined sync: 11,300 served / 11,600 attempted = 97.4% (passes 95%)
+      //
+      // Async math:
+      //   L19 saga: 300 jobs/sec served (unchanged from L19)
+      //   Flash: 200 jobs/sec into worker (cap 200) → 200 served
+      //   Combined async: 500 served / 500 attempted = 100%
+      const l19 = puzzles.ecommerceAtScale.solution();
+      return {
+        nodes: [
+          ...l19.nodes,
+          node('flash-sale-clients', 'client', { x: 40, y: 1020 }, { rps: 500, readRatio: 0 }),
+          node('flash-rate-limiter', 'rateLimiter', { x: 240, y: 1020 }, { capacity: 200 }),
+          node('flash-order-queue', 'queue', { x: 440, y: 1020 }, { topic: 'flash-sale-orders', pubsub: false }),
+          node('flash-inventory-worker', 'service', { x: 640, y: 1020 }, { role: 'worker', capacity: 200, consumerGroup: 'flash-inventory' }),
+          node('flash-inventory-db', 'database', { x: 840, y: 1020 }, { role: 'metadata', capacity: 200 }),
+        ],
+        edges: [
+          ...l19.edges,
+          edge('flash-sale-clients', 'flash-rate-limiter'),
+          edge('flash-rate-limiter', 'flash-order-queue'),
+          edge('flash-order-queue', 'flash-inventory-worker'),
+          edge('flash-inventory-worker', 'flash-inventory-db'),
+        ],
+      };
+    },
+  },
+
+  searchAtScale: {
+    id: 'searchAtScale',
+    order: 19.2,
+    title: 'Search at Scale (ElasticSearch + indexing pipeline)',
+    slug: 'Follow-up to L19: add a separate search architecture. Sharded search index + async indexing pipeline from the catalog. Two layers, one read path, one write path.',
+    blurb:
+      'This is a follow-up to Lesson 19. The full e-commerce canvas is pre-populated — your job is the search architecture. In real systems, full-text search runs on a read-optimized derivative of the catalog (ElasticSearch / OpenSearch / Solr), NOT the catalog DB itself. The architecture has TWO independent paths: (1) a QUERY path (Search Clients → Search Service → Search Cache → sharded Search Index cluster) — separate from catalog browsing, optimized for inverted-index lookup; (2) an async INDEXING pipeline (Item Updates → Indexing Queue → Indexing Workers → Search Index) — pulls change events from the auth store and writes search documents. Eventually-consistent by design (1-5 second lag is normal). New role: `database:searchIndex` (amber color). Reuses the existing CDC + Queue + Workers pattern from L17/L19.',
+    background: [
+      'What this lesson teaches well — on the canvas. Search is its own architectural layer beside the auth store, not on top of it. The auth store (Catalog DB) is the source of truth for writes; the Search Index is a read-optimized derivative populated asynchronously via CDC + Kafka + Indexing Workers. You can see both layers on the canvas: the L19 catalog tier is the auth store; the new search tier sits beside it with its own read path and its own write pipeline.',
+      'Why ElasticSearch is its own component (`database:searchIndex`). A relational metadata DB and a search index look similar in a hand-drawn diagram but differ at every important axis: data structure (B-tree vs inverted index), access pattern (key lookup vs full-text query), consistency model (strongly consistent vs eventually consistent with the auth store), capacity profile (1k ops/sec vs 10-50k), latency profile (relational 30ms vs in-memory inverted-index ~5ms). The amber `Search Index` node on the canvas signals "this is the search tier" at a glance — matches how every senior-level system design diagram draws it.',
+      'The async indexing pipeline — the load-bearing pattern. Indexing is expensive: Lucene segments + segment merges + replica syncs. Synchronous indexing on the catalog write path would slow every write 10-100x. The async pipeline lets the source DB commit fast; the indexing pipeline catches up in seconds. Real production: CDC reads change events from Postgres / DynamoDB → Kafka topic → Flink (or Kafka consumers) curate search documents → bulk-write to ES. We model this as a synthetic `item-updates` Client (50 events/sec, representing CDC) → Indexing Queue → 2 Indexing Workers → Search Index.',
+      'Sharding + replication on the search index. A single search index is a SPOF + a throughput bottleneck. Real ES clusters shard for parallel query (each shard answers its portion in parallel; results merged at the coordinating node) AND replicate each shard Y ways for availability + throughput (total query TPS = X × Y). 3 shards behind a load balancer is the minimum viable cluster.',
+      'Patterns NOT modeled here — talk-track only. (1) Ranking / relevance: TF-IDF, BM25, learning-to-rank, personalization signals. Massive topic; not on canvas. (2) Autocomplete / type-ahead: separate cache + prefix-trie. (3) Spell correction / fuzzy matching: Lucene feature. (4) Synonym expansion, multilingual search. (5) Index rebuild pipelines (when schema changes, reindex everything from the auth store — a real operational concern). All in simplifications.md.',
+      'Soft caveat — eventual consistency. "I just updated the product price and it doesn\'t show in search yet" is normal for real systems. The indexing pipeline has lag — typically 1-5 seconds in production ES setups. In an interview, mention this as a known trade-off: the alternative (synchronous indexing) makes every write 10-100x slower and creates tight coupling between auth store and search tier.',
+      'Where to dig further. Research is in `puzzle-research/search-at-scale.md` (Hello Interview ES deep dive + FB Post Search problem breakdown + DoorDash + Confluent production blog posts). The Hello Interview ES deep dive is the single best summary for interview prep.',
+    ],
+    sources: [
+      { title: 'Hello Interview — Elasticsearch Deep Dive for System Design Interviews', url: 'https://www.hellointerview.com/learn/system-design/deep-dives/elasticsearch', note: 'Canonical interview reference: ES as a search layer, CDC + Kafka pipeline, inverted index, sharding + replication' },
+      { title: 'Hello Interview — Design Facebook\'s Post Search', url: 'https://www.hellointerview.com/learn/system-design/problem-breakdowns/fb-post-search', note: 'Concrete numbers + service decomposition: Query Service / Ingestion Service / inverted index in Redis' },
+      { title: 'Confluent — Building a Scalable Search Architecture', url: 'https://www.confluent.io/blog/building-a-scalable-search-architecture/', note: 'Production blueprint: Kafka + Flink + ElasticSearch as the canonical pipeline' },
+      { title: 'DoorDash Engineering — Faster Indexing with Kafka + ES', url: 'https://careersatdoordash.com/blog/open-source-search-indexing/', note: 'Real-world Kafka + ES indexing pipeline at production scale' },
+    ],
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'loadBalancer',
+      { type: 'cache', role: 'cdn' },
+      { type: 'cache', role: 'internal' },
+      { type: 'service', role: 'appServer' },
+      { type: 'service', role: 'worker' },
+      'queue',
+      { type: 'database', role: 'metadata' },
+      { type: 'database', role: 'searchIndex' },
+    ],
+    initialNodes: () => {
+      // Pre-populate the full L19 canvas + add the new search-side producers
+      // (Search Clients for queries + Item Updates as a synthetic CDC source
+      // representing catalog change events). The student wires the search
+      // pipeline and the indexing pipeline.
+      const l19 = puzzles.ecommerceAtScale.solution();
+      return [
+        ...l19.nodes,
+        node('search-clients', 'client', { x: 40, y: 1020 }, { rps: 2000, readRatio: 1.0 }),
+        node('item-updates', 'client', { x: 40, y: 1300 }, { rps: 50, readRatio: 0 }),
+      ];
+    },
+    initialEdges: () => puzzles.ecommerceAtScale.solution().edges,
+    requirements: [
+      {
+        key: 'syncSuccess',
+        label: 'Sync success rate ≥ 99% across all four workloads',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'L19\'s 11,100 + 2,000 search queries + 50 item-update events = 13,150 sync ops. Drop the Search Cache (shards melt under 2k r/s), miss the search index sharding (single shard hot), or skip the search path entirely (Search Clients drop to 0% served) — success rate falls.',
+      },
+      {
+        key: 'asyncSuccess',
+        label: 'Background success ≥ 99% (saga + indexing pipeline both drain)',
+        test: (r) => r.backgroundSuccessRate >= 0.99,
+        lesson:
+          'L19\'s saga (300 events/sec, pubsub × 3 consumer groups) + the new indexing pipeline (50 events/sec → indexing workers → search index) must both drain. Combined async = 350 ops/sec.',
+      },
+      {
+        key: 'hasSearchIndex',
+        label: 'Has at least 1 Search Index node (role:searchIndex)',
+        predicate: { kind: 'presence', type: 'database', role: 'searchIndex', min: 1 },
+        lesson:
+          'A search index is architecturally distinct from a relational metadata DB. Real systems use ElasticSearch / OpenSearch / Solr; we model it as a database with role: \'searchIndex\' (amber color). Make at least one so the canvas reads as a proper two-layer architecture.',
+      },
+      {
+        key: 'hasSearchIndexCluster',
+        label: 'Sharded Search Index cluster: 3+ nodes tagged role:searchIndex',
+        predicate: { kind: 'presence', type: 'database', role: 'searchIndex', min: 3 },
+        lesson:
+          'A single search index is a SPOF and a throughput bottleneck. Real ES clusters shard across N nodes for parallel query (each shard answers its portion in parallel) AND replicate each shard for availability. 3 shards behind a load balancer mirrors the production minimum.',
+      },
+      {
+        key: 'hasIndexingPipeline',
+        label: 'Has an indexing pipeline: 2+ Queues on the canvas',
+        predicate: { kind: 'presence', type: 'queue', min: 2 },
+        lesson:
+          'Indexing is async — items flow Item-Updates → Indexing Queue → Indexing Workers → Search Index. L19\'s Order Queue covers one queue; L19.2 adds an Indexing Queue. With both present, you have the canonical two-pipeline e-commerce backend (orders + indexing).',
+      },
+    ],
+    solution: () => {
+      // Inherit L19 canonical entirely, then ADD:
+      //   Query path:
+      //     search-clients (2000 r/s)
+      //       → search-svc (cap 3000)
+      //       → search-cache (cap 5000, hit 0.7) — absorbs 1400; 600 miss
+      //       → search-idx-lb (cap 5000) — fans to 3 shards
+      //       → search-idx-{0,1,2} (cap 10000 each)
+      //
+      //   Indexing pipeline:
+      //     item-updates (50 events/sec, CDC source)
+      //       → indexing-queue (pubsub: false work queue)
+      //       → indexing-worker-{0,1} (cap 100 each, group 'search-indexer')
+      //       → search-idx-lb (write path — same LB acts as coordinating node)
+      //
+      // Sync math:
+      //   L19 unchanged: 11,100 served / 11,100 attempted
+      //   Search query: 2000 → cache absorbs 1400; 600 miss → 200/shard → all served
+      //   Item updates: 50 → indexing-queue accepts all (queue terminates sync)
+      //   Combined: 13,150 served / 13,150 attempted = 100%
+      //
+      // Async math:
+      //   L19 saga (pubsub × 3 groups): 300 served / 300 attempted
+      //   Indexing (work-queue × 2 workers, each gets 25): 50 served / 50 attempted
+      //   Combined: 350 served / 350 attempted = 100%
+      const l19 = puzzles.ecommerceAtScale.solution();
+      return {
+        nodes: [
+          ...l19.nodes,
+          // ─── Search query path ───────────────────────────────────────
+          node('search-clients', 'client', { x: 40, y: 1020 }, { rps: 2000, readRatio: 1.0 }),
+          node('search-svc', 'service', { x: 240, y: 1020 }, { role: 'appServer', capacity: 3000 }),
+          node('search-cache', 'cache', { x: 440, y: 1020 }, { role: 'internal', capacity: 5000, hitRate: 0.7 }),
+          node('search-idx-lb', 'loadBalancer', { x: 640, y: 1020 }, { capacity: 5000 }),
+          node('search-idx-0', 'database', { x: 840, y: 940 }, { role: 'searchIndex', capacity: 10000 }),
+          node('search-idx-1', 'database', { x: 840, y: 1040 }, { role: 'searchIndex', capacity: 10000 }),
+          node('search-idx-2', 'database', { x: 840, y: 1140 }, { role: 'searchIndex', capacity: 10000 }),
+          // ─── Indexing pipeline (CDC + workers) ───────────────────────
+          node('item-updates', 'client', { x: 40, y: 1300 }, { rps: 50, readRatio: 0 }),
+          node('indexing-queue', 'queue', { x: 240, y: 1300 }, { topic: 'catalog-changes', pubsub: false }),
+          node('indexing-worker-0', 'service', { x: 440, y: 1260 }, { role: 'worker', capacity: 100, consumerGroup: 'search-indexer' }),
+          node('indexing-worker-1', 'service', { x: 440, y: 1360 }, { role: 'worker', capacity: 100, consumerGroup: 'search-indexer' }),
+        ],
+        edges: [
+          ...l19.edges,
+          // Query path
+          edge('search-clients', 'search-svc'),
+          edge('search-svc', 'search-cache'),
+          edge('search-cache', 'search-idx-lb'),
+          edge('search-idx-lb', 'search-idx-0'),
+          edge('search-idx-lb', 'search-idx-1'),
+          edge('search-idx-lb', 'search-idx-2'),
+          // Indexing pipeline — workers write to the same search-idx-lb
+          // (which acts as the coordinating node for both reads and writes)
+          edge('item-updates', 'indexing-queue'),
+          edge('indexing-queue', 'indexing-worker-0'),
+          edge('indexing-queue', 'indexing-worker-1'),
+          edge('indexing-worker-0', 'search-idx-lb'),
+          edge('indexing-worker-1', 'search-idx-lb'),
+        ],
+      };
+    },
+  },
 };
 
 export const puzzleOrder = [
@@ -1822,6 +2265,9 @@ export const puzzleOrder = [
   'tinyurlAtScale',
   'streamProcessingAtScale',
   'fileStorageAtScale',
+  'ecommerceAtScale',
+  'flashSaleAtScale',
+  'searchAtScale',
 ];
 export const defaultPuzzleId = 'buildComputer';
 

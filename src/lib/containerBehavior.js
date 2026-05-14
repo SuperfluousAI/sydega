@@ -17,6 +17,17 @@ import { componentTypes } from './componentTypes.js';
 
 export const OVERSHOOT_PADDING = 16;
 
+// Reserved zone at the top of every container for its header label
+// (Computer's color banner, etc.). Children can't be placed at local y less
+// than this — clamped on drop / drag-stop. Sized generously so the header
+// has visible breathing room above the top of the first child row.
+export const HEADER_ZONE = 36;
+
+// How far past the parent's underlying edge the child's center must travel
+// before separation triggers. Without this, light edge-grazing during a
+// resize / reorder gesture would yank the child out of the parent.
+export const LEAVE_MARGIN = 60;
+
 const FALLBACK_CHILD_W = 170;
 const FALLBACK_CHILD_H = 90;
 const FALLBACK_CONTAINER_W = 320;
@@ -82,5 +93,27 @@ export function computeLeavingSides(child, parent) {
     right: cx > parentW,
     bottom: cy > parentH,
     left: cx < 0,
+  };
+}
+
+// True when the child's center is still within the parent's underlying
+// bounds PLUS a forgiving leave margin. Used by the wouldSeparate decision
+// in Canvas so a child grazing an edge during resize / reorder doesn't get
+// yanked out of the parent.
+export function isStillInsideParent(child, parent, margin = LEAVE_MARGIN) {
+  if (!parent) return false;
+  const { w: parentW, h: parentH } = containerSize(parent);
+  const { w: cw, h: ch } = childSize(child);
+  const cx = (child.position?.x || 0) + cw / 2;
+  const cy = (child.position?.y || 0) + ch / 2;
+  return cx >= -margin && cx <= parentW + margin && cy >= -margin && cy <= parentH + margin;
+}
+
+// Clamp a child's local position so it can't overlap the parent's header.
+// Only affects y (header is at the top); x stays where the player placed it.
+export function clampChildLocalPosition(pos, zone = HEADER_ZONE) {
+  return {
+    x: pos?.x || 0,
+    y: Math.max(zone, pos?.y || 0),
   };
 }

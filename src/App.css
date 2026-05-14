@@ -67,6 +67,14 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Lock the actions column width so a wide hint message can't stretch the
+     button column and resize all buttons. Buttons inside become full-width
+     of this fixed track. */
+  width: 180px;
+}
+.puzzle-actions > button {
+  width: 100%;
+  text-align: center;
 }
 
 .primary-button {
@@ -95,6 +103,19 @@
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+.hint-button {
+  color: #fde68a;
+  border-color: #5a4218;
+}
+.hint-button:hover:not(:disabled) {
+  color: #fef3c7;
+  background: #2a1f0a;
+}
+
+/* Sidebar duplicate of the hint message was removed — the canvas banner is
+   the single source of truth so the hint can't get clipped by the
+   fixed-height top pane. */
 
 .danger-button {
   margin-top: 12px;
@@ -632,6 +653,30 @@
   color: var(--text-dim);
   cursor: pointer;
   user-select: none;
+}
+
+/* Auto-stack toggle — full-width row under the Components header. Same
+   muted style as .panel-hint so it doesn't shout, but the active checkbox
+   still reads. */
+.palette-auto-stack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.palette-auto-stack:hover {
+  color: var(--text);
+}
+.palette-auto-stack input {
+  margin: 0;
 }
 .more-components {
   margin-top: 18px;
@@ -1318,6 +1363,132 @@
   transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
               width 0.22s cubic-bezier(0.16, 1, 0.3, 1),
               height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Hint flash — the 💡 Hint button just placed this node or wired this edge.
+   Gold pulse glow draws the player's eye to the canvas change. Cleared after
+   ~3s by App's hintFlash state. */
+@keyframes hint-flash-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.95); }
+  50%  { box-shadow: 0 0 0 14px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+.react-flow__node-system.hint-flash {
+  animation: hint-flash-pulse 1.1s ease-out 3;
+  border-radius: 8px;
+  outline: 2px solid #fbbf24;
+  outline-offset: 1px;
+}
+.react-flow__node-system.hint-flash .system-node,
+.react-flow__node-system.hint-flash .computer-frame,
+.react-flow__node-system.hint-flash .router-node {
+  box-shadow: 0 0 18px 4px rgba(251, 191, 36, 0.55);
+}
+
+/* Drop-target highlight — when a child is being dragged and hovered over a
+   container that would become its new parent, pulse the container in cyan
+   so the player knows where it'll land on release. Cyan/teal is distinct
+   from gold (hints), red (failures), and the per-meta color borders so the
+   "you can drop here" message reads at a glance. The animation runs while
+   .drop-target is present; class is removed by App on dragStop. Only
+   applied to containers (Computer today); innermost-container wins. */
+@keyframes drop-target-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7), 0 0 18px 2px rgba(34, 211, 238, 0.35) inset;
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(34, 211, 238, 0), 0 0 28px 6px rgba(34, 211, 238, 0.55) inset;
+  }
+}
+.react-flow__node-system.drop-target .computer-frame,
+.react-flow__node-system.drop-target .system-node,
+.react-flow__node-system.drop-target .router-node {
+  outline: 2px dashed #22d3ee;
+  outline-offset: 2px;
+  animation: drop-target-pulse 1.1s ease-in-out infinite;
+  transition: transform 0.15s ease-out;
+  transform: scale(1.015);
+}
+
+/* Edge flash — when a hint wires a new edge, the path itself flashes gold. */
+@keyframes hint-flash-edge-pulse {
+  0%, 100% { stroke: #fbbf24; filter: drop-shadow(0 0 4px rgba(251, 191, 36, 0.8)); }
+  50%      { stroke: #fde68a; filter: drop-shadow(0 0 10px rgba(251, 191, 36, 1)); }
+}
+.react-flow__edge.hint-flash-edge .react-flow__edge-path {
+  animation: hint-flash-edge-pulse 1.1s ease-in-out 3;
+}
+
+/* Canvas-overlay banner that names the hint right above the canvas. Pairs
+   with the gold node/edge glow so the player sees WHAT was placed without
+   hunting the sidebar. */
+.canvas-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-wrap > :first-child {
+  flex: 1;
+  min-height: 0;
+}
+@keyframes hint-banner-in {
+  0%   { transform: translate(-50%, -8px); opacity: 0; }
+  100% { transform: translate(-50%, 0);    opacity: 1; }
+}
+.canvas-hint-banner {
+  position: absolute;
+  /* Below the typical ComponentInfo overlay header (~48–60px) so the
+     hint banner is never covered when a node is selected. */
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above the canvas info overlay (z-index 15) so the hint is always
+     visible to the player even when ComponentInfo is showing. */
+  z-index: 50;
+  padding: 12px 40px 12px 22px;
+  max-width: min(620px, calc(100% - 48px));
+  background: linear-gradient(180deg, #fde68a, #fbbf24);
+  color: #422006;
+  border: 1px solid #b45309;
+  border-radius: 14px;
+  box-shadow: 0 6px 22px rgba(251, 191, 36, 0.55), 0 0 0 4px rgba(251, 191, 36, 0.18);
+  animation: hint-banner-in 0.18s ease-out;
+  /* The ✕ dismiss button needs click events; banner stays interactive. */
+  pointer-events: auto;
+  text-align: center;
+}
+.canvas-hint-banner-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.canvas-hint-banner-rationale {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: #5a2d00;
+  text-align: left;
+}
+.canvas-hint-banner-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: 0;
+  color: #422006;
+  font-size: 14px;
+  font-weight: 700;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.canvas-hint-banner-dismiss:hover {
+  background: rgba(180, 83, 9, 0.18);
+  opacity: 1;
 }
 
 /* Directional stretch when a child is being pulled past one of the parent's

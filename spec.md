@@ -104,6 +104,9 @@ The composition simulator stamps LAN info into `perNode` so the UI can render li
 8. The simulator returns `ok: false` with an error string when the graph has a cycle.
 9. A request is "served" ONLY when it terminates at a sink role or a cache hit. Passthrough nodes with no downstream count their flow as dropped, not served.
 10. Pressing **Reset** returns the canvas to the active puzzle's `initialNodes()`.
+10a. Pressing **💡 Hint** places the first missing canonical *node* (whose parent, if any, already exists on the canvas) OR if every canonical node is present, wires the first missing canonical *edge* whose endpoints both exist. Computed from `puzzle.solution()`; edge identity is `source→target:kind` so a Read and a Write between the same pair are distinct. A one-line `.puzzle-hint-message` ("💡 Placed: Cache" / "💡 Wired: App Server → Cache") appears below the action buttons; cleared on Reset, Show solution, and puzzle switch. Renders only when the puzzle has a `solution()` function.
+10b. Pressing **✨ Show solution** replaces the canvas with the puzzle's full canonical graph (`puzzle.solution()`). Reversible via Reset → `initialNodes()`. Renders only when the puzzle has a `solution()`.
+10c. Pressing **↶ Undo** (or `Cmd/Ctrl+Z`) reverts the last edit; `Shift+Cmd/Ctrl+Z` / `Cmd/Ctrl+Y` redoes. History is capped at 50 entries each direction and cleared on puzzle switch.
 11. Lesson completion is persisted in `localStorage`; a completed lesson's tile shows a check.
 12. Each lesson's reading panel (if it has `background:` paragraphs) auto-expands inline below the title on first visit; collapses on subsequent visits. The `Read full lesson ▸` toggle expands/collapses at any time. The canvas stays visible while reading (no modal).
 13. Connection validity is enforced at draw time: `source.hasOutput && target.hasInput` must both hold; the connection is otherwise rejected. Direction is independently controlled per edge via two endpoint dot/arrow toggles.
@@ -117,7 +120,7 @@ The composition simulator stamps LAN info into `perNode` so the UI can render li
 - **Bundle size:** Informational only; not currently gating.
 - **Browser support:** Latest Chrome, Firefox, Safari on desktop.
 - **Performance:** All three simulators run synchronously in well under 50ms for graphs of any size a puzzle realistically requires.
-- **Tests:** Vitest + @testing-library/react + jsdom. **204 tests passing as of 2026-05-11.**
+- **Tests:** Vitest + @testing-library/react + jsdom. **363 tests passing as of 2026-05-13.**
 - **Accessibility:** Drag-and-drop is mouse-only. Known gap; not gating for current scope.
 
 ## Stack constraints
@@ -143,7 +146,7 @@ The composition simulator stamps LAN info into `perNode` so the UI can render li
 | Edge axes | 2 (R/W kind via body click + Direction arrows via endpoint dot click) |
 | Requirements using declarative `predicate:` shape | 2 (Lesson 2 `hasRouter`, Lesson 4 `hasLB`) |
 | Requirements using legacy `test:` shape | many (rest of the puzzles) |
-| Tests passing | 204 |
+| Tests passing | 363 |
 | Test files | 11 (`puzzles.test.js`, `lanIp.test.js`, `edgeGeometry.test.js`, `graph.test.js`, `simulator.test.js`, `containerBehavior.test.js`, `SystemNode.test.jsx`, `FloatingEdge.test.js`, `ComponentInfo.test.jsx`, `containerVisualBounds.test.js`, `PuzzleBar.test.jsx`) |
 | Container behavior rules (R1–R6) | 6 |
 | Default LAN CIDR | `192.168.1.0/24` |
@@ -182,6 +185,7 @@ Pinned by test files in `src/lib/` and `src/components/`. The first set is *beha
 - A Computer with `hasInput && hasOutput` renders exactly 8 floating handles (4 source + 4 target); one per side (top / right / bottom / left); handles are siblings of `.computer-frame`, not children, so the frame can't occlude them.
 - `ComponentInfo` renders a placeholder when no node is selected; renders description / usage / connects when one is.
 - `PuzzleBar` shows the reading toggle when the puzzle has background paragraphs; hides it otherwise; the toggle text reflects expanded state.
+- `PuzzleBar` renders the `💡 Hint` button iff `puzzle.solution` is a function AND `onHint` is provided; renders `.puzzle-hint-message` iff `hintMessage` is non-null. (Covered by `PuzzleBar.test.jsx`.)
 
 ## Component types (current registry)
 

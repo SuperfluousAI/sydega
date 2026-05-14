@@ -55,11 +55,50 @@ export function descendants(nodes, rootId) {
   return out;
 }
 
-// Push any siblings overlapping with `movedNodeId` out along the axis of
-// minimum overlap, with a small gap. Only handles direct collisions with the
-// moved node (no cascading). Returns the updated nodes array plus the ids
-// that actually moved (so the caller can animate them).
+// Push any siblings overlapping with `movedNodeId` (or any sibling that
+// was itself pushed) out along the axis of minimum overlap, with a small
+// gap. Cascades: when sibling A is pushed by the moved node M, A becomes a
+// new "pusher" — if A now overlaps sibling B, B is pushed too, and so on.
+// Same parent only (parentNode equality). The moved node itself is never
+// pushed back. Final pass also resolves any pre-existing sibling-vs-sibling
+// overlaps the player created earlier.
+//
+// Iteration cap prevents pathological cycles (e.g., undersized parent with
+// tightly packed children). The cap is generous (50 passes); the surrounding
+// reflowContainers grows the parent to fit, so children rarely run out of
+// space.
 const SIBLING_GAP = 8;
+const SCOOT_MAX_ITERATIONS = 50;
+
+// Auto-stack snap grid. When App's `autoStack` setting is on, child local
+// positions get rounded to this multiple — gives players an "inner grid"
+// feel without forcing tight packing. They can still leave gaps between
+// children for arrow clarity (their A→C / B→C arrow scenario).
+export const AUTOSTACK_GRID_UNIT = 20;
+
+export function snapToGrid(value, unit = AUTOSTACK_GRID_UNIT) {
+  return Math.round(value / unit) * unit;
+}
+
+export function snapChildPosition(pos, unit = AUTOSTACK_GRID_UNIT) {
+  return { x: snapToGrid(pos?.x || 0, unit), y: snapToGrid(pos?.y || 0, unit) };
+}
+
+// Re-snap every parented child in `nodes` to the grid. Used when the
+// autoStack setting flips false→true so existing layouts get tidied in one
+// shot. Top-level (canvas) nodes are untouched — auto-stack only applies
+// inside parents.
+export function snapAllParentedChildren(nodes, unit = AUTOSTACK_GRID_UNIT) {
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (!n.parentNode) return n;
+    const snapped = snapChildPosition(n.position, unit);
+    if (snapped.x === (n.position?.x || 0) && snapped.y === (n.position?.y || 0)) return n;
+    changed = true;
+    return { ...n, position: snapped };
+  });
+  return changed ? out : nodes;
+}
 
 export function scootSiblings(nodes, movedNodeId) {
   const moved = nodes.find((n) => n.id === movedNodeId);
@@ -70,59 +109,116 @@ export function scootSiblings(nodes, movedNodeId) {
   );
   if (siblings.length === 0) return { nodes, scootedIds: [] };
 
-  const movedBounds = nodeBounds(moved);
   let next = nodes;
-  const scootedIds = [];
+  const scootedIds = new Set();
+  // BFS queue of pushers — start with the moved node; each sibling that gets
+  // displaced is added so its new position can push further siblings.
+  const queue = [movedNodeId];
+  // Track {pusherId, otherId} pairs we've already considered in this BFS so
+  // we don't bounce A↔B forever.
+  const seenPairs = new Set();
+  let iterations = 0;
 
-  for (const sibling of siblings) {
-    const currentSib = next.find((n) => n.id === sibling.id);
-    const sibBounds = nodeBounds(currentSib);
-    if (!overlaps(movedBounds, sibBounds)) continue;
-
-    const xOverlap = Math.min(
-      movedBounds.right - sibBounds.left,
-      sibBounds.right - movedBounds.left
-    );
-    const yOverlap = Math.min(
-      movedBounds.bottom - sibBounds.top,
-      sibBounds.bottom - movedBounds.top
-    );
-
-    let dx = 0;
-    let dy = 0;
-    if (xOverlap < yOverlap) {
-      const sibCx = (sibBounds.left + sibBounds.right) / 2;
-      const movCx = (movedBounds.left + movedBounds.right) / 2;
-      if (sibCx <= movCx) {
-        dx = movedBounds.left - sibBounds.right - SIBLING_GAP;
-      } else {
-        dx = movedBounds.right - sibBounds.left + SIBLING_GAP;
-      }
-    } else {
-      const sibCy = (sibBounds.top + sibBounds.bottom) / 2;
-      const movCy = (movedBounds.top + movedBounds.bottom) / 2;
-      if (sibCy <= movCy) {
-        dy = movedBounds.top - sibBounds.bottom - SIBLING_GAP;
-      } else {
-        dy = movedBounds.bottom - sibBounds.top + SIBLING_GAP;
-      }
+  while (queue.length > 0 && iterations < SCOOT_MAX_ITERATIONS) {
+    iterations += 1;
+    const pusherId = queue.shift();
+    const pusher = next.find((n) => n.id === pusherId);
+    if (!pusher) continue;
+    const pusherBounds = nodeBounds(pusher);
+    for (const sib of siblings) {
+      if (sib.id === pusherId) continue;
+      const pairKey = pusherId < sib.id ? `${pusherId}|${sib.id}` : `${sib.id}|${pusherId}`;
+      if (seenPairs.has(pairKey)) continue;
+      const currentSib = next.find((n) => n.id === sib.id);
+      const sibBounds = nodeBounds(currentSib);
+      if (!overlaps(pusherBounds, sibBounds)) continue;
+      seenPairs.add(pairKey);
+      const { dx, dy } = scootVector(pusherBounds, sibBounds);
+      next = applyShift(next, sib.id, dx, dy);
+      scootedIds.add(sib.id);
+      queue.push(sib.id);
     }
-
-    next = next.map((n) =>
-      n.id === sibling.id
-        ? {
-            ...n,
-            position: {
-              x: (n.position?.x || 0) + dx,
-              y: (n.position?.y || 0) + dy,
-            },
-          }
-        : n
-    );
-    scootedIds.push(sibling.id);
   }
 
-  return { nodes: next, scootedIds };
+  // Final cleanup pass: even after the BFS, two siblings that were already
+  // overlapping each other (e.g., player dropped both on the same spot)
+  // might still overlap. Loop over all sibling pairs until stable.
+  const all = [moved, ...siblings.map((s) => next.find((n) => n.id === s.id))];
+  let stable = false;
+  let cleanupPasses = 0;
+  while (!stable && cleanupPasses < SCOOT_MAX_ITERATIONS) {
+    stable = true;
+    cleanupPasses += 1;
+    for (let i = 0; i < siblings.length; i++) {
+      for (let j = i + 1; j < siblings.length; j++) {
+        const a = next.find((n) => n.id === siblings[i].id);
+        const b = next.find((n) => n.id === siblings[j].id);
+        const aBounds = nodeBounds(a);
+        const bBounds = nodeBounds(b);
+        if (!overlaps(aBounds, bBounds)) continue;
+        // Push the one we haven't moved yet, preferring to push the later
+        // sibling out so the first one stays put when possible.
+        const target = siblings[j];
+        const { dx, dy } = scootVector(aBounds, bBounds);
+        next = applyShift(next, target.id, dx, dy);
+        scootedIds.add(target.id);
+        stable = false;
+      }
+    }
+  }
+  // Suppress unused-var warning on `all` — it's documentation that the
+  // cleanup pass considers the moved node + every sibling, even though
+  // the actual lookups happen by id.
+  void all;
+
+  return { nodes: next, scootedIds: [...scootedIds] };
+}
+
+// Returns the displacement vector to push `sibBounds` away from
+// `pusherBounds` along the axis of minimum overlap, with SIBLING_GAP added.
+function scootVector(pusherBounds, sibBounds) {
+  const xOverlap = Math.min(
+    pusherBounds.right - sibBounds.left,
+    sibBounds.right - pusherBounds.left
+  );
+  const yOverlap = Math.min(
+    pusherBounds.bottom - sibBounds.top,
+    sibBounds.bottom - pusherBounds.top
+  );
+  let dx = 0;
+  let dy = 0;
+  if (xOverlap < yOverlap) {
+    const sibCx = (sibBounds.left + sibBounds.right) / 2;
+    const pusherCx = (pusherBounds.left + pusherBounds.right) / 2;
+    if (sibCx <= pusherCx) {
+      dx = pusherBounds.left - sibBounds.right - SIBLING_GAP;
+    } else {
+      dx = pusherBounds.right - sibBounds.left + SIBLING_GAP;
+    }
+  } else {
+    const sibCy = (sibBounds.top + sibBounds.bottom) / 2;
+    const pusherCy = (pusherBounds.top + pusherBounds.bottom) / 2;
+    if (sibCy <= pusherCy) {
+      dy = pusherBounds.top - sibBounds.bottom - SIBLING_GAP;
+    } else {
+      dy = pusherBounds.bottom - sibBounds.top + SIBLING_GAP;
+    }
+  }
+  return { dx, dy };
+}
+
+function applyShift(nodes, id, dx, dy) {
+  return nodes.map((n) =>
+    n.id === id
+      ? {
+          ...n,
+          position: {
+            x: (n.position?.x || 0) + dx,
+            y: (n.position?.y || 0) + dy,
+          },
+        }
+      : n
+  );
 }
 
 function nodeBounds(node) {

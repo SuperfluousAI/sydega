@@ -20,11 +20,12 @@ import {
   findContainerAt,
   prepopulateComputerHardware,
   scootSiblings,
+  snapChildPosition,
   sortParentsFirst,
   worldPosition,
 } from '../lib/graph.js';
 import { reflowContainers } from '../lib/reflow.js';
-import { computeLeavingSides } from '../lib/containerBehavior.js';
+import { clampChildLocalPosition, computeLeavingSides, isStillInsideParent } from '../lib/containerBehavior.js';
 
 const nodeTypes = { system: SystemNode };
 
@@ -176,6 +177,8 @@ function CanvasInner({
   onRipple,
   onScoot,
   onDeleteNode,
+  onSetDropTarget,
+  autoStack = true,
   selectedNode,
   regions,
   onSnapshot,
@@ -321,11 +324,31 @@ function CanvasInner({
   const handleDragOver = useCallback((event) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-  }, []);
+    // Palette-to-canvas drag is HTML5, not React Flow — so the drop-target
+    // pulse from handleNodeDrag never fires. Mirror it here: project the
+    // cursor into flow space, find the container under it, and highlight.
+    if (!onSetDropTarget) return;
+    const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const container = findContainerAt(nodes, position);
+    onSetDropTarget(container?.id || null);
+  }, [nodes, onSetDropTarget, screenToFlowPosition]);
+
+  const handleDragLeave = useCallback((event) => {
+    // dragleave fires whenever the cursor crosses a child boundary too, so
+    // only clear when leaving the canvas wrapper itself — relatedTarget is
+    // outside the wrapper (or null when leaving the browser window).
+    if (!onSetDropTarget) return;
+    const wrap = wrapperRef.current;
+    if (!wrap) return;
+    if (!event.relatedTarget || !wrap.contains(event.relatedTarget)) {
+      onSetDropTarget(null);
+    }
+  }, [onSetDropTarget]);
 
   const handleDrop = useCallback(
     (event) => {
       event.preventDefault();
+      if (onSetDropTarget) onSetDropTarget(null);
       const typeKey = event.dataTransfer.getData('application/sdgame-type');
       if (!typeKey) return;
       snapshot();
@@ -347,12 +370,22 @@ function CanvasInner({
       const container = findContainerAt(nodes, position);
 
       const containerWorld = container ? worldPosition(container, nodes) : null;
+      // Compute local position inside the container, then clamp to keep the
+      // child below the container's header. If auto-stack is on, snap after
+      // clamping so the snapped position still respects HEADER_ZONE. Top-
+      // level drops (no container) keep their exact coords.
+      let finalPos;
+      if (container) {
+        const localPos = { x: position.x - containerWorld.x, y: position.y - containerWorld.y };
+        const clamped = clampChildLocalPosition(localPos);
+        finalPos = autoStack ? snapChildPosition(clamped) : clamped;
+      } else {
+        finalPos = position;
+      }
       const newNode = {
         id,
         type: 'system',
-        position: container
-          ? { x: position.x - containerWorld.x, y: position.y - containerWorld.y }
-          : position,
+        position: finalPos,
         ...(meta?.nodeStyle ? { style: meta.nodeStyle } : {}),
         ...(container ? { parentNode: container.id } : {}),
         data: { type: typeKey, config: defaultsFor(typeKey, role) },
@@ -378,7 +411,7 @@ function CanvasInner({
         onRipple(container.id, { x: pos.x + w / 2, y: pos.y + h / 2 });
       }
     },
-    [screenToFlowPosition, setNodes, nodes, onRipple, onScoot, snapshot]
+    [screenToFlowPosition, setNodes, nodes, onRipple, onScoot, snapshot, onSetDropTarget, autoStack]
   );
 
   const handleSelectionChange = useCallback(
@@ -424,8 +457,57 @@ function CanvasInner({
       setLastMoveAt(Date.now());
       setTrashHover(isOverTrash(event));
 
+      // Resolve, ONCE per drag tick, what container (if any) would become
+      // the child's new parent if the user released right now. Used by both
+      // the drop-target highlight (NEW container) and the leaving-shake
+      // (current parent) so the two signals stay consistent — the parent
+      // only shakes when releasing would actually separate the child.
+      //
+      // For a node that ALREADY has a parent, treat it as still-inside as
+      // long as its center hasn't crossed the parent edge by LEAVE_MARGIN
+      // pixels — keeps casual edge-grazing from inadvertently removing the
+      // child. Only when the child is clearly past the margin do we
+      // re-resolve the candidate parent via findContainerAt.
+      const meta = componentTypes[node.data.type];
+      const w = node.width || node.style?.width || meta?.nodeStyle?.width || 170;
+      const h = node.height || node.style?.height || meta?.nodeStyle?.height || 90;
+      const nodeWorld = worldPosition(node, nodes);
+      const center = { x: nodeWorld.x + w / 2, y: nodeWorld.y + h / 2 };
+      const currentParentId = node.parentNode || null;
+      const currentParent = currentParentId
+        ? nodes.find((n) => n.id === currentParentId)
+        : null;
+      const stillInsideCurrent = currentParent
+        ? isStillInsideParent(node, currentParent)
+        : false;
+      let candidateParentId;
+      if (stillInsideCurrent) {
+        candidateParentId = currentParentId;
+      } else {
+        const target = findContainerAt(nodes, center, node.id);
+        candidateParentId = target?.id || null;
+      }
+      const wouldSeparate = candidateParentId !== currentParentId;
+      const overTrash = isOverTrash(event);
+
+      // Drop-target highlight: pulse the NEW container only if release would
+      // re-parent into it. Trash hover suppresses (release-over-trash
+      // deletes, doesn't re-parent).
+      if (onSetDropTarget) {
+        onSetDropTarget(
+          !overTrash && wouldSeparate && candidateParentId ? candidateParentId : null
+        );
+      }
+
+      // Leaving-shake on the CURRENT parent. R5 used to fire as soon as the
+      // child's center crossed the parent's underlying edge — but the player
+      // can hang their cursor past the edge and release without actually
+      // separating (findContainerAt still resolves back to the same parent
+      // due to inclusive bounds). Gate the shake on `wouldSeparate` so the
+      // tug-of-war animation only plays when releasing actually breaks the
+      // parent/child bond.
       if (!onSetShaking) return;
-      if (!node.parentNode) {
+      if (!node.parentNode || !wouldSeparate) {
         onSetShaking(null);
         return;
       }
@@ -434,19 +516,17 @@ function CanvasInner({
         onSetShaking(null);
         return;
       }
-      // R5 — vibrate only when the child is considered "leaving" (its center
-      // has crossed the parent's underlying edge). Same threshold used in
-      // computeLeavingSides; pinned by the tests in containerBehavior.test.js.
       const sides = computeLeavingSides(node, parent);
       const leaving = sides.top || sides.right || sides.bottom || sides.left;
       onSetShaking(leaving ? { id: parent.id, sides } : null);
     },
-    [nodes, onSetShaking, isOverTrash]
+    [nodes, onSetShaking, isOverTrash, onSetDropTarget]
   );
 
   const handleNodeDragStop = useCallback(
     (event, node) => {
       if (onSetShaking) onSetShaking(null);
+      if (onSetDropTarget) onSetDropTarget(null);
 
       // If the player released the node over the trash zone, delete it.
       // This is the drag-to-trash deletion UX. Short-circuit before the
@@ -465,9 +545,27 @@ function CanvasInner({
       const h = node.height || node.style?.height || meta?.nodeStyle?.height || 90;
       const nodeWorld = worldPosition(node, nodes);
       const center = { x: nodeWorld.x + w / 2, y: nodeWorld.y + h / 2 };
-      const target = findContainerAt(nodes, center, node.id);
-      const newParentId = target?.id || null;
       const currentParentId = node.parentNode || null;
+      const currentParent = currentParentId
+        ? nodes.find((n) => n.id === currentParentId)
+        : null;
+      // Match the drag-time policy: child stays in its current parent
+      // unless its center has clearly crossed the leave margin. This keeps
+      // the dragStop decision consistent with what the leaving-shake
+      // showed during the gesture.
+      const stillInsideCurrent = currentParent
+        ? isStillInsideParent(node, currentParent)
+        : false;
+      let target = null;
+      let newParentId = currentParentId;
+      if (!stillInsideCurrent) {
+        target = findContainerAt(nodes, center, node.id);
+        newParentId = target?.id || null;
+      } else {
+        // Resolve the actual node ref for later local-coord math; the
+        // "current parent" object we already have.
+        target = currentParent;
+      }
       const parentChanged = newParentId !== currentParentId;
 
       let next = nodes;
@@ -478,6 +576,8 @@ function CanvasInner({
         if (target) {
           const targetWorld = worldPosition(target, nodes);
           newPos = { x: nodeWorld.x - targetWorld.x, y: nodeWorld.y - targetWorld.y };
+          newPos = clampChildLocalPosition(newPos);
+          if (autoStack) newPos = snapChildPosition(newPos);
         } else {
           newPos = nodeWorld;
         }
@@ -488,6 +588,17 @@ function CanvasInner({
             : n
         );
         next = sortParentsFirst(next);
+      } else if (newParentId) {
+        // Same parent — always clamp header overlap; snap to grid only
+        // when autoStack is on.
+        const clamped = clampChildLocalPosition(node.position);
+        const after = autoStack ? snapChildPosition(clamped) : clamped;
+        if (after.x !== node.position.x || after.y !== node.position.y) {
+          movedPos = after;
+          next = next.map((n) =>
+            n.id === node.id ? { ...n, position: after } : n
+          );
+        }
       }
 
       // Scoot any siblings the node now overlaps with (also handles
@@ -508,7 +619,7 @@ function CanvasInner({
         onRipple(newParentId, { x: ripplePos.x + w / 2, y: ripplePos.y + h / 2 });
       }
     },
-    [nodes, setNodes, onSetShaking, onRipple, onScoot, isOverTrash, onDeleteNode]
+    [nodes, setNodes, onSetShaking, onRipple, onScoot, isOverTrash, onDeleteNode, onSetDropTarget, autoStack]
   );
 
   // Relocate effect. The bin moves only when BOTH conditions hold for
@@ -540,7 +651,13 @@ function CanvasInner({
   const anchor = trashAnchors?.[trashSlot];
 
   return (
-    <div ref={wrapperRef} className="canvas-wrapper" onDrop={handleDrop} onDragOver={handleDragOver}>
+    <div
+      ref={wrapperRef}
+      className="canvas-wrapper"
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+    >
       {/* Info pane lives INSIDE the canvas as a top overlay so the
           pedagogical context is right where the player is looking. */}
       <div className="canvas-info-overlay">

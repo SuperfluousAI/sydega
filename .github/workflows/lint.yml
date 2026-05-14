@@ -1,0 +1,45 @@
+# Parses every workflow YAML in this repo. A syntactically-bad workflow
+# gets silently ignored by GitHub Actions (no per-step logs, no error
+# visible in the PR/push) — which means a broken build-push.yml can sit
+# undetected until someone notices ECR has no new tags. This workflow
+# is the backstop.
+#
+# Same shape as superfluous-corey/.github/workflows/lint.yml and
+# superfluous-vibes/.github/workflows/lint.yml.
+
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  yaml-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Parse all workflow YAML
+        run: |
+          set -e
+          fail=0
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$f" ] || continue
+            echo "::group::Parsing $f"
+            if python -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$f"; then
+              echo "ok"
+            else
+              echo "::error file=$f::Workflow YAML failed to parse"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail

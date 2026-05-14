@@ -1,0 +1,19 @@
+apiVersion: v2
+name: sydega
+description: Systems-design teaching game (Vite + React, static served by nginx)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+# Wraps the platform's universal v3 chart. All resource shape (Deployment,
+# Service, HTTPRoute, NetworkPolicy, ResourceQuota) comes from `app-v3`;
+# this wrapper just supplies the values under the `app:` alias.
+#
+# When this chart lives at `superfluous-ai/apps/sydega/chart/`, the relative
+# path to the platform chart is `../../../infra/helm/app-v3`. If you reorg
+# the layout, update this.
+dependencies:
+  - name: superfluous-app
+    version: 0.3.0
+    repository: file://../../../infra/helm/app-v3
+    alias: app

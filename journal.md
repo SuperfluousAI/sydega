@@ -2287,3 +2287,161 @@ Clean. The `defaultRole` mechanism is the architectural answer that makes Databa
 - **End-to-end encryption (client-side AES-256)**: not on canvas, not in simplifications.md. Could be added if a future audit surfaces demand.
 - **The fifth failure test (single metadata DB)**: covered conceptually by the no-cache test which DOES overload the cluster. Skipping.
 
+---
+
+## Session 1 Part 22 — 2026-05-13: Interaction polish + e-commerce capstone (L19) + flash-sale sub-lesson (L19.1) + SRE notes tabled. Test count 358 → 426 (+68).
+
+### What this Part is
+
+Three threads:
+1. **Interaction polish**: a long sequence of operator-driven fixes to drag/drop UX (hint button with rationale, gold-flash on hint placement, sibling-overlap cascade, drop-target highlight for both in-canvas and palette drag, parent shake gated on actual separation, header-zone clamp, leave-margin threshold, auto-stack toggle).
+2. **Lesson 19 — Design Amazon e-commerce**: fifth FAANG-grade capstone (Twitter L15, TinyURL L16, Kafka L17, Dropbox L18, Amazon L19). Audit-driven research → proposal → built.
+3. **Lesson 19.1 — Flash-Sale Spike**: first sub-lesson (extends L19 instead of replacing). New `initialEdges()` schema lets follow-up lessons pre-populate the parent puzzle's canonical solution so the student focuses on the new pattern, not rebuilding from scratch. Also tabled the regional/SRE puzzle track for later.
+
+### Interaction polish — the long thread
+
+Operator was play-testing on Lesson 19 and surfaced a cascade of UX bugs. Each fix is small individually; together they meaningfully change how the canvas feels.
+
+**Progressive-reveal hint button with rationale.**
+- 💡 Hint button in PuzzleBar next to Show Solution. Computes diff vs `puzzle.solution()`. Finds the first missing canonical node (whose parent, if any, already exists) and places it. Once all canonical nodes are placed, wires the first missing canonical edge whose endpoints both exist.
+- **Two-line message**: bold title ("💡 Placed: Cache") + rationale subtitle drawn from `puzzle.requirements[].lesson` via a new helper `findHintRationale(puzzle, node)`. Three-tier lookup: (1) presence-predicate match (`{ kind: 'presence', type, role? }` matches the placed node), (2) label-mention match (whole-word regex against all requirement label/lesson strings, including role-aware variants), (3) `componentInfo[type].description` fallback. Zero per-puzzle authoring required — every existing `lesson:` string already has the WHY.
+- **Persistent gold banner at top of canvas** (not auto-clearing). The earlier 5.5s timer was a mistake — beginners need more than that to read. Banner persists until next Hint click / Reset / Show Solution / puzzle switch / explicit ✕ dismiss.
+- **Gold pulse animation** on the placed node (or thicker gold stroke on a wired edge). Runs 3 times over ~3.3s then stops (CSS keyframe count), so the visual cue settles down while the text stays put.
+- Removed the sidebar duplicate of the hint message (the fixed-height top pane was clipping it). Canvas banner is the single source of truth.
+
+**Sibling-overlap cascade.** Operator: "as a child moves around its parents, its siblings must move away. no siblings can overlap each other."
+- The existing `scootSiblings` had an explicit "no cascade" comment — if A pushed B, B didn't push C. Refactored to BFS-cascade: every newly scooted sibling becomes a new pusher. Plus a final cleanup pass for any pre-existing sibling-vs-sibling overlap (not caused by the moved node). Iteration cap of 50.
+- Extracted helpers `scootVector` + `applyShift` so the BFS pass and cleanup pass share the displacement math.
+- 8 new tests including a stress case (8 siblings stacked at 30px offset — pairwise non-overlap after a single drag).
+
+**Drop-target highlight (in-canvas drag).** Operator: "when a component is hovered over a potential parent, the component should have an animation to show that a drop or click up will make it a child."
+- New `dropTargetId` state in App. Canvas's `handleNodeDrag` resolves `findContainerAt(child center)` per tick; if the candidate container ≠ current parent, calls `onSetDropTarget(candidateParentId)`. Container with `.drop-target` className gets a cyan pulse + 2px dashed outline + 1.5% scale.
+- Cleared on `handleNodeDragStop`.
+- **Hidden bug fixed**: `displayNodes` was conditionally spreading `className` (`...(className ? { className } : {})`). When a class needed to be REMOVED, the previous frame's className lingered because Canvas writes `displayNodes` back into App's raw `nodes` via `setNodes`. Now always sets `className` (with `undefined` to clear). Without this fix, dragStop wouldn't clear the gold/cyan highlights — a bug component-isolation tests couldn't catch.
+
+**Drop-target highlight (palette drag).** Operator: "drag and dropping a component from the left does not make the component do the animation. in fact it's not even the component on canvas look, it's the button being pressed on the left that's being dragged with no animation."
+- Palette uses HTML5 drag events, not React Flow's. Wired the drop-target into Canvas's `handleDragOver` (mirrors `handleNodeDrag`). `handleDragLeave` clears when cursor exits the wrapper (using `relatedTarget` containment, so internal-element crossings don't false-trigger).
+- **Custom drag image**: Palette's `handleDragStart` now builds a small "ghost" element off-screen (dark card with color-matched left bar + label) and calls `setDragImage(ghost, 10, 10)` — so the drag preview looks like the canvas node, not the palette button. `requestAnimationFrame` schedules the ghost's removal after the browser snapshots it.
+
+**Parent shake gated on actual separation.** Operator: "a parent should not shake and glow yellow unless the child is at a point where a click up or drop of the component is going to separate it from its parent."
+- `computeLeavingSides` was using "center crossed underlying edge" — but `findContainerAt` uses inclusive bounds, so a child grazing the edge could still resolve to the same parent on release. Misleading shake.
+- Now: gate the shake (AND drop-target highlight) on `wouldSeparate = candidateParentId !== currentParentId`. Single source of truth for both signals.
+
+**Leave margin (forgiving threshold).** Operator: "the threshold for a child leaving parent needs to be extended to be larger. When i'm trying to resize i find myself inadvertently removing child from parent because the threshold for leaving is so small."
+- New `LEAVE_MARGIN = 60` constant. New helper `isStillInsideParent(child, parent, margin)` returns true when the child's center is within parent edge ± 60px. Replaces the inclusive-edge check in the separation decision.
+- `wouldSeparate` now: if currentParent exists AND `isStillInsideParent` → false. Else → re-resolve via `findContainerAt`. Anchored to the current parent for the duration of the drag.
+- Both `handleNodeDrag` (live signal) and `handleNodeDragStop` (commit decision) use it. The two stay in sync.
+
+**Header-zone clamp.** Operator: "a component should not be allowed to overlap the parent's header at the top."
+- New `HEADER_ZONE = 36` constant + helper `clampChildLocalPosition(pos)` that clamps local y up to ≥ 36. Applied at drop AND drag-stop. Children can't visually overlap the Computer's color banner anymore.
+- Snap-to-grid (auto-stack) runs AFTER the clamp so snapped positions still respect the header zone.
+
+**Auto-stack toggle.** Operator: "can we have a setting or config that will auto stack the components in a parent and resize it for easy formating an organization? we can have it on by default but also have it off if user prefers."
+- Operator's nuance: not tight packing — visitors should be able to leave gaps between siblings for arrow clarity (component A and B both connecting to C). Want "inner grid" + auto-resize, no scrunching.
+- `AUTOSTACK_GRID_UNIT = 20`. Helpers `snapToGrid`, `snapChildPosition`, `snapAllParentedChildren` in `graph.js`.
+- App holds `autoStack` (localStorage, default true). Toggle as a styled checkbox under "Components" in the palette. Existing `reflowContainers` already grows parents to fit.
+- One-shot effect: when `autoStack` flips false→true, re-snap every parented child + reflow. Subsequent drops/drag-stops handle ongoing snapping. `prevAutoStackRef` seeds the comparison so the effect doesn't fire on initial mount.
+
+**Memory committed.** New entry `feedback_visual_contract_tests.md`: every new visible UI feature needs a test that proves DOM presence in its real parent. Triggered after operator opened the app post-shipped-hint-button and couldn't see it (component-isolation tests passed in jsdom; the layout/clipping issue only manifested in the browser). Component tests confirm "the JSX runs"; they don't confirm "the user can see it." Subsequent fixes (the className-leak bug, the z-index conflict with the canvas info overlay, the fixed-height top pane clipping the sidebar) were all caught by extending the visual-contract suite.
+
+**Visual-contract test infrastructure.** Built `src/App.test.jsx` with a minimal reactflow mock (renders nodes as DOM divs with className + `data-id`/`data-type` attributes, exposes drag handlers via `rfHandlers`). Lets us write App-level tests that fire `onNodeDrag` / `onNodeDragStop` synthetically and assert the DOM updates correctly. 13+ new App-level tests now ride on this seam.
+
+### Lesson 19 — Design Amazon e-commerce
+
+Audit-driven, same workflow as Lessons 14-18:
+
+**Research (`puzzle-research/ecommerce.md`)** — 8 sources surveyed. Most useful: the Werner Vogels / Highscalability interview from circa-2007 still defines the philosophy (cart = AP, checkout = CP). microservices.io's saga pattern reference is canonical. Stripe's idempotency post is the textbook reference. CodeKarle has a full service decomposition with pre-deduction-then-reconciliation as Amazon's actual mechanism.
+
+**Proposal (`puzzle-research/ecommerce-puzzle-proposal.md`)** — Canonical solution shape, workload math verified, 7 requirements, lesson-copy outline. Pedagogical headline: three sync workloads with different consistency regimes (AP catalog + AP cart + CP order) + an async saga at checkout fanned out via pubsub queue to three consumer groups (inventory + payment + notification).
+
+**Built** — `ecommerceAtScale` (order 19), 21 nodes + 19 edges canonical, kind `flow`. Three client groups: Browse (10k r/s, 100% reads) + Cart (1k r/s, 50/50) + Checkout (100 w/s). Workload separation:
+- Browse path: CDN (hit 0.9) → Browse LB → 2 catalog services → catalog cache (hit 0.85) → catalog DB LB → 3 sharded catalog DBs
+- Cart path: Cart Svc → Cart Cache → Cart DB
+- Checkout path: Order Svc → Order Queue (pubsub:true) → 3 consumer groups (inventory + payment + notification workers) → 3 sink DBs (inventory DB + payment gateway + notification sink)
+
+**Capacity math (verified all paths):**
+- Browse: 10000 → CDN absorbs 9000 → 1000 to LB → 500 each to 2 services → cache hit 0.85 absorbs 850 → 150 to DB LB → 50/shard (cap 300)
+- Cart: 1000 → svc (cap 1500) → cache hit 0.7 absorbs 350; writes 500 + read miss 150 = 650 ops to DB (cap 1500)
+- Checkout: 100 → Order Svc (cap 200) → Order Queue (no cap)
+- Async saga: 100 events × pubsub × 3 groups = 300 jobs/sec; each worker (cap 200) drains its 100/sec → 300 served async
+
+**7 requirements:** sync ≥ 99%, async ≥ 99%, hasCdn, hasCatalogCache, hasCatalogShards (3+ metadata DBs), hasOrderQueue, hasSagaConsumerGroups (≥ 3 via `consumerGroupCount`).
+
+**No new sim primitives, no new component types.** Lesson 19 is pure composition of L7+L8+L10+L14+L17 building blocks. Canonical passes its own simulator on first run.
+
+### Lesson 19.1 — Flash-Sale Spike (sub-lesson pattern)
+
+Operator caught a design insight: if L20 is a follow-up to L19, it should be **L19.1** (showing it's a sub-topic) AND should **pre-populate L19's canonical solution** so the student focuses on the new pattern, not rebuilding from scratch.
+
+**Schema extension** — `puzzle.initialEdges()` is now optional. App.jsx reads it in `useState`, `handleReset`, `handleSwitchPuzzle`. Top-level lessons (no `initialEdges`) get `[]` (unchanged behavior). Sub-lessons return the parent's canonical edges.
+
+**`flashSaleAtScale` (order 19.1)** — appears as "Lesson 19.1" in the palette (the `order` field rendered as a float just works). `initialNodes()` returns `puzzles.ecommerceAtScale.solution().nodes` + an unwired `flash-sale-clients` group at 500 r/s. `initialEdges()` returns the L19 canonical edges.
+
+**Pedagogical headline:** bulkheading (give the flash-sale spike its own queue + worker + DB so it can't cascade into normal checkout) + admission control via Rate Limiter (cap 200 admits ~40% of the 500 r/s spike, returns 429 for the rest — by design).
+
+**Solution adds 4 components:**
+- `flash-rate-limiter` (cap 200) — drops 300 of 500 at 429
+- `flash-order-queue` (work-queue, pubsub: false — single consumer)
+- `flash-inventory-worker` (cap 200, consumer group `flash-inventory`)
+- `flash-inventory-db` (cap 200)
+
+**Math:** L19 untouched (11,100/11,100 sync, 300/300 async). Flash adds 200 served / 500 attempted sync (rate-limiter drops are intentional) and 200/200 async. Combined: 97.4% sync, 100% async.
+
+**4 requirements:**
+1. `syncSuccess ≥ 0.95` — relaxed from L19's 0.99 because rate-limiter rejections are deliberate
+2. `asyncSuccess ≥ 0.99` — saga + flash worker must both drain
+3. `hasFlashRateLimiter` (presence) — forces admission control
+4. `hasFlashLane` (presence: queue ≥ 2) — forces bulkhead (Order Queue + Flash Queue)
+
+Without rate limiter (try to scale-out the worker instead): async passes but the presence requirement fails. Without bulkhead (wire flash into existing Order Svc): saga workers compete with flash, async fails 99%. Only the full pattern (rate-limit + bulkhead) passes.
+
+### SRE / regional / multi-AZ track — tabled
+
+Operator: "the SRE angle doesn't have to be for now, can be for later but table all the details about this to talk about later."
+
+Wrote `puzzle-research/regional-sre-NOTES.md`:
+- What current primitives support (failure injection, decorative regions, kafkaReplica auto-promotion as a failover primitive)
+- What's missing (region-aware client routing, cross-region replication lag, automatic failover routing, geo-DNS, multi-leader quorum)
+- Two paths: **A** (build on current primitives, diagrammatic) vs **B** (extend sim with region tags + auto-failover, build a 2-3 puzzle track)
+- 11 specific SRE concepts to teach (AZ/region distinction, multi-AZ replication, active-passive vs active-active, RTO/RPO, bulkheading, chaos engineering, health checks, circuit breakers, graceful degradation)
+- 7 sources to fetch when we get there
+- Decision point: after L19 ships and gets play-tested, decide between A and B based on whether the e-commerce work naturally pulls "but how would this survive an AZ failure?"
+
+### Test count
+
+358 → 426 (+68). Breakdown:
+- +5 hint button tests (PuzzleBar) — button rendering, ordering, message inside .puzzle-actions, click handler
+- +13 App-level visual-contract tests — drop-target highlight in-canvas, drop-target highlight palette-drag, parent shake gating, leave-margin threshold, banner persistence + dismiss, sidebar absence
+- +8 rationale-helper tests (`hintRationale.test.js`) — presence-predicate match, role-honoring match, label-mention, componentInfo fallback, edge rationale, whole-word boundary, null cases
+- +8 cascade tests (`graph.test.js`) — direct push, 3-deep, 4-deep, no-op, different parents, pre-existing overlap, no-self-move, 8-deep tight pack
+- +5 auto-stack tests — snapToGrid math, snapChildPosition x+y, missing-fields, snapAllParentedChildren, checkbox visibility / persistence
+- +11 header-clamp + leave-margin tests — isStillInsideParent thresholds + custom margin, clampChildLocalPosition y-clamp + x-untouched + missing-fields
+- +14 framework auto-tests for Lesson 19 (canonical-passes, contract, etc.)
+- +4 explicit Lesson 19.1 tests (canonical-passes via framework, schema validation)
+
+All passing. Builds clean (497kB JS / 31kB CSS — slight uptick from new primitives).
+
+### Patterns worth keeping
+
+1. **`feedback-visual-contract-tests` memory rule**: every visible feature needs a DOM-presence-in-real-parent test, not just an isolated component render. Caught real bugs this Part (className leak, z-index conflicts, layout clipping).
+2. **Sub-lesson numbering (L19.1)**: float `order:` field renders correctly, communicates "this is a sub-topic" in the palette. Pattern reusable for L19.2 (search), L19.3 (recommendations).
+3. **`initialEdges()` schema for sub-lessons**: pre-populate the parent's canonical so the student doesn't rebuild. Reset goes back to the pre-populated state, not empty.
+4. **The `wouldSeparate` decision anchored to current parent**: single source of truth for both the drop-target highlight and the leaving-shake. Both signals fire together, both stay accurate.
+5. **Hint rationale lookup via existing data**: zero per-puzzle authoring — `findHintRationale` walks requirements + componentInfo and finds the WHY automatically. Cheapest viable answer to "tell me why."
+
+### Things to confirm in next play-test pass
+
+- Lesson 19 capacity tuning under spike scenarios (e.g., if checkout doubles). Math is currently exact; small surprises possible.
+- Lesson 19.1 visual layout — the flash lane lives below L19 at y=1020. Confirm the canvas zoom-out + scroll affordance handles ~1100-tall content.
+- Auto-stack interaction with very-wide containers — does the 20px snap feel right at all container sizes?
+- Hint rationale for components that don't carry a role — the label-mention fallback iterates all role-aware labels, but verify it picks the right one when the puzzle has multiple roles of the same type.
+- Reset behavior on L19.1: should go back to pre-populated L19 canonical + unwired flash-sale-clients. Confirm this isn't surprising for a player who has been reflexively pressing Reset to clear.
+
+### What this Part didn't address (deferred)
+
+- **L19.2 Search at scale** — recommended next sub-lesson. ElasticSearch / inverted-index pattern, async indexing pipeline, autocomplete. Same `initialEdges` pre-population pattern.
+- **L19.3 Recommendations** — pre-computed cache, offline batch (Spark/Hadoop) + online serving layer.
+- **L20+ SRE track** — full notes in `regional-sre-NOTES.md`. Decision deferred until L19 gets a play session.
+- **Per-lane sim metrics** — the current `successRate` aggregates across all clients. The flash-sale puzzle works around this with a relaxed threshold + presence-based requirements. A future sim extension could tag traffic by client and report per-client success rates, which would let us write tighter requirements like "normal checkout success ≥ 99% even during flash-sale spike."
+- **Idempotency-keys / compensating transactions on canvas** — both are central to real e-commerce sagas but live as request-level concerns, not flow-level. Currently in lesson copy + simplifications.md. Would require extending the sim to model failures / retries to bring on-canvas.
+

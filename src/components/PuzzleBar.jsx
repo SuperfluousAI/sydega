@@ -7,6 +7,7 @@ export default function PuzzleBar({
   onRun,
   onReset,
   onShowSolution,
+  onHint,
   onUndo,
   canUndo,
   celebrationKey = 0,
@@ -69,6 +70,15 @@ export default function PuzzleBar({
             title={canUndo ? 'Undo (Cmd/Ctrl+Z)' : 'Nothing to undo'}
           >
             ↶ Undo
+          </button>
+        )}
+        {hasSolution && onHint && (
+          <button
+            className="ghost-button hint-button"
+            onClick={onHint}
+            title="Place the next missing canonical piece — one step at a time."
+          >
+            💡 Hint
           </button>
         )}
         {hasSolution && onShowSolution && (

@@ -3,7 +3,14 @@
 // implementation can be verified without manual trial-and-error.
 
 import { describe, it, expect } from 'vitest';
-import { computeOvershoot, computeLeavingSides } from './containerBehavior.js';
+import {
+  computeOvershoot,
+  computeLeavingSides,
+  isStillInsideParent,
+  clampChildLocalPosition,
+  HEADER_ZONE,
+  LEAVE_MARGIN,
+} from './containerBehavior.js';
 import { defaultsFor } from './componentTypes.js';
 
 const PARENT_W = 760;
@@ -214,5 +221,61 @@ describe('R5 — vibrate is only triggered by a "leaving" drag', () => {
     const c = child('c', 'phone', 'p', -100, 150);
     const sides = computeLeavingSides(c, parent);
     expect(sides.left).toBe(true);
+  });
+});
+
+describe('isStillInsideParent — forgiving leave threshold', () => {
+  const parent = container('p', 'computer', 100, 100, PARENT_W, PARENT_H);
+
+  it('child fully inside is still inside', () => {
+    const c = child('c', 'phone', 'p', 100, 100);  // center 185, 145 in local
+    expect(isStillInsideParent(c, parent)).toBe(true);
+  });
+
+  it('child whose center has crossed the right edge but stays within LEAVE_MARGIN is STILL inside', () => {
+    // PARENT_W = 760, CHILD_W = 170. Center.x = parentW + LEAVE_MARGIN/2 (well within margin).
+    const localX = PARENT_W + LEAVE_MARGIN / 2 - CHILD_W / 2;
+    const c = child('c', 'phone', 'p', localX, 100);
+    expect(isStillInsideParent(c, parent)).toBe(true);
+  });
+
+  it('child whose center has crossed the right edge by MORE than LEAVE_MARGIN is OUT', () => {
+    const localX = PARENT_W + LEAVE_MARGIN + 1 - CHILD_W / 2;
+    const c = child('c', 'phone', 'p', localX, 100);
+    expect(isStillInsideParent(c, parent)).toBe(false);
+  });
+
+  it('returns false when parent is null', () => {
+    expect(isStillInsideParent({}, null)).toBe(false);
+  });
+
+  it('accepts a custom margin', () => {
+    // Center at parentW + 30. With default LEAVE_MARGIN=60, still inside.
+    // With margin=10, out.
+    const c = child('c', 'phone', 'p', PARENT_W - CHILD_W / 2 + 30, 100);
+    expect(isStillInsideParent(c, parent, 60)).toBe(true);
+    expect(isStillInsideParent(c, parent, 10)).toBe(false);
+  });
+});
+
+describe('clampChildLocalPosition — header zone reservation', () => {
+  it('clamps y up to HEADER_ZONE when below it', () => {
+    expect(clampChildLocalPosition({ x: 50, y: 0 })).toEqual({ x: 50, y: HEADER_ZONE });
+    expect(clampChildLocalPosition({ x: 50, y: 10 })).toEqual({ x: 50, y: HEADER_ZONE });
+  });
+
+  it('leaves y alone when already at or above HEADER_ZONE', () => {
+    expect(clampChildLocalPosition({ x: 50, y: HEADER_ZONE })).toEqual({ x: 50, y: HEADER_ZONE });
+    expect(clampChildLocalPosition({ x: 50, y: 100 })).toEqual({ x: 50, y: 100 });
+  });
+
+  it('never modifies x', () => {
+    expect(clampChildLocalPosition({ x: -50, y: 0 })).toEqual({ x: -50, y: HEADER_ZONE });
+    expect(clampChildLocalPosition({ x: 999, y: 999 })).toEqual({ x: 999, y: 999 });
+  });
+
+  it('tolerates missing fields', () => {
+    expect(clampChildLocalPosition({})).toEqual({ x: 0, y: HEADER_ZONE });
+    expect(clampChildLocalPosition(null)).toEqual({ x: 0, y: HEADER_ZONE });
   });
 });

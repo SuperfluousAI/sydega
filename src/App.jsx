@@ -9,8 +9,9 @@ import ResizeHandle from './components/ResizeHandle.jsx';
 
 import { simulate } from './lib/simulator.js';
 import { reflowContainers } from './lib/reflow.js';
-import { prepopulateComputerHardware, sortParentsFirst, worldPosition } from './lib/graph.js';
-import { componentTypes } from './lib/componentTypes.js';
+import { prepopulateComputerHardware, snapAllParentedChildren, sortParentsFirst, worldPosition } from './lib/graph.js';
+import { componentTypes, metaFor } from './lib/componentTypes.js';
+import { findHintRationale, findHintEdgeRationale } from './lib/hintRationale.js';
 import { computeOvershoot } from './lib/containerBehavior.js';
 import { puzzles, defaultPuzzleId, evaluatePuzzle } from './lib/puzzles.js';
 
@@ -31,9 +32,16 @@ export default function App() {
   const puzzle = puzzles[activePuzzleId];
 
   const [nodes, setNodes] = useState(() => puzzle.initialNodes());
-  const [edges, setEdges] = useState([]);
+  // Most puzzles start with no edges (the student wires them). Follow-up
+  // lessons (L19.1 flash-sale, future L19.2 search, etc.) pre-populate the
+  // parent puzzle's canonical edges so the student starts from a working
+  // base and focuses on the new pattern instead of rebuilding L19.
+  const [edges, setEdges] = useState(() => (puzzle.initialEdges?.() || []));
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [simResult, setSimResult] = useState(null);
+  // Progressive-reveal hint state lives in `hintFlash` below; it carries
+  // both the title ("Placed: Cache") and rationale (WHY that piece) plus
+  // the id(s) for the gold pulse.
 
   // Snapshot-based undo/redo. Every state-mutating user action calls
   // `snapshot()` first, which pushes the current {nodes, edges} onto `past`
@@ -82,6 +90,10 @@ export default function App() {
   // { id, sides: { top, right, bottom, left } } | null — which container is
   // currently being "tugged" by a child being dragged past its edges.
   const [shakingState, setShakingState] = useState(null);
+  // Container id (or null) the currently-dragged child is hovered over as a
+  // candidate new parent. Drives the gold-mint pulse on the target. Canvas
+  // reports it on each drag tick; cleared on dragStop.
+  const [dropTargetId, setDropTargetId] = useState(null);
   // { parentId, x, y, key } | null — ripple effect when a child attaches to a parent.
   const [ripple, setRipple] = useState(null);
   const rippleCounter = useRef(0);
@@ -102,6 +114,21 @@ export default function App() {
     setTimeout(() => {
       setScootingIds((current) => (current === ids ? [] : current));
     }, 280);
+  }, []);
+
+  // Hint banner state. Persists until cleared by: another Hint click,
+  // Reset, Show Solution, puzzle switch, or the user dismissing via ✕.
+  // The node/edge gold-pulse animation runs only for the first ~3s after a
+  // hint placement (CSS keyframe count limits it) so the player isn't stuck
+  // staring at a perpetually-pulsing node, but the banner text stays put.
+  const [hintFlash, setHintFlash] = useState({ nodeIds: [], edgeIds: [], title: null, rationale: null, key: 0 });
+  const hintFlashCounter = useRef(0);
+  const triggerHintFlash = useCallback((payload) => {
+    hintFlashCounter.current += 1;
+    setHintFlash({ ...payload, key: hintFlashCounter.current });
+  }, []);
+  const dismissHintFlash = useCallback(() => {
+    setHintFlash((cur) => ({ nodeIds: [], edgeIds: [], title: null, rationale: null, key: cur.key }));
   }, []);
 
   useEffect(() => {
@@ -144,6 +171,26 @@ export default function App() {
     }
   }, [paletteCollapsed]);
 
+  // Auto-stack: when ON, child positions inside a parent snap to a 20px
+  // grid on drop / drag-stop, and the parent reflow keeps things tidy.
+  // Default ON for new visitors; toggle in the Palette under "Components".
+  const [autoStack, setAutoStack] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sdg-auto-stack');
+      // Default true; only off when the value is exactly '0'.
+      return raw !== '0';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('sdg-auto-stack', autoStack ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [autoStack]);
+
   // Drag-to-resize sizes for the three layout chrome regions. Each is
   // persisted to localStorage so a user's preferred layout sticks across
   // reloads. Clamping is enforced inside the resize handles.
@@ -178,6 +225,24 @@ export default function App() {
       setNodes(reflowed);
     }
   }, [nodes]);
+
+  // When autoStack flips OFF→ON, snap every existing parented child to the
+  // grid in one shot. Subsequent drops/drag-stops handle ongoing snapping.
+  // Doesn't run on initial mount (the prevAutoStack ref is seeded equal to
+  // autoStack, so the first effect-fire is a no-op).
+  const prevAutoStackRef = useRef(autoStack);
+  useEffect(() => {
+    const prev = prevAutoStackRef.current;
+    prevAutoStackRef.current = autoStack;
+    if (!autoStack || prev === autoStack) return;
+    setNodes((ns) => {
+      const snapped = snapAllParentedChildren(ns);
+      if (snapped === ns) return ns;
+      // Snapping may have changed child positions enough that the parent's
+      // bounding-box reflow needs to re-run for an exact fit.
+      return reflowContainers(snapped);
+    });
+  }, [autoStack]);
 
   const handleAddHardware = useCallback((computerId) => {
     snapshot();
@@ -268,10 +333,19 @@ export default function App() {
           ? (port) => handleSetPort(n.id, port)
           : undefined,
       };
-      const className = scootingIds.includes(n.id) ? 'scooting' : undefined;
-      return { ...n, data, ...(className ? { className } : {}) };
+      const classes = [];
+      if (scootingIds.includes(n.id)) classes.push('scooting');
+      if (hintFlash.nodeIds.includes(n.id)) classes.push('hint-flash');
+      if (dropTargetId === n.id) classes.push('drop-target');
+      // ALWAYS set className (use undefined when no classes). Canvas writes
+      // displayNodes back into App's raw `nodes` via setNodes(scootedNodes),
+      // so leaving className unset here would leak the previous frame's
+      // className into the next render — eg. .drop-target persisting after
+      // dragStop. Setting `undefined` clears any stale value.
+      const className = classes.length ? classes.join(' ') : undefined;
+      return { ...n, data, className };
     });
-  }, [nodes, liveSim, handleReparent, handleAddHardware, handleSetPort, shakingState, ripple, scootingIds]);
+  }, [nodes, liveSim, handleReparent, handleAddHardware, handleSetPort, shakingState, ripple, scootingIds, hintFlash, dropTargetId]);
 
 
   const displayEdges = useMemo(() => {
@@ -279,11 +353,15 @@ export default function App() {
     return edges.map((e) => {
       const kind = e.data?.kind || 'both';
       const failed = failedIds.has(e.source) || failedIds.has(e.target);
-      const color = failed ? '#444' : edgeKindColor(kind);
+      const flashing = hintFlash.edgeIds.includes(e.id);
+      const color = failed ? '#444' : flashing ? '#fbbf24' : edgeKindColor(kind);
       // Arrow direction is rendered by FloatingEdge itself (it owns its
       // SVG marker def with orient="auto-start-reverse" so markerStart and
       // markerEnd are visual mirrors). App.jsx just supplies stroke color +
       // labels; FloatingEdge reads data.arrows for the toggled state.
+      const baseStyle = failed
+        ? { stroke: color, strokeWidth: 2, strokeDasharray: '6 4', opacity: 0.5 }
+        : { stroke: color, strokeWidth: 2 };
       return {
         ...e,
         // Force the floating edge type so every edge anchors to node perimeters
@@ -297,12 +375,11 @@ export default function App() {
         labelBgBorderRadius: 4,
         labelStyle: { fill: '#0b0a1a', fontSize: 10, fontWeight: 700 },
         labelBgStyle: { fill: color, opacity: failed ? 0.4 : 1 },
-        style: failed
-          ? { stroke: color, strokeWidth: 2, strokeDasharray: '6 4', opacity: 0.5 }
-          : { stroke: color, strokeWidth: 2 },
+        style: flashing ? { ...baseStyle, strokeWidth: 4 } : baseStyle,
+        className: flashing ? 'hint-flash-edge' : undefined,
       };
     });
-  }, [edges, nodes]);
+  }, [edges, nodes, hintFlash]);
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) || null,
@@ -370,10 +447,11 @@ export default function App() {
   const handleReset = useCallback(() => {
     snapshot();
     setNodes(puzzle.initialNodes());
-    setEdges([]);
+    setEdges(puzzle.initialEdges?.() || []);
     setSelectedNodeId(null);
     setSimResult(null);
-  }, [puzzle, snapshot]);
+    dismissHintFlash();
+  }, [puzzle, snapshot, dismissHintFlash]);
 
   const handleShowSolution = useCallback(() => {
     // Replace the canvas state with the puzzle's canonical passing graph.
@@ -385,7 +463,73 @@ export default function App() {
     setEdges(solEdges);
     setSelectedNodeId(null);
     setSimResult(null);
-  }, [puzzle, snapshot]);
+    dismissHintFlash();
+  }, [puzzle, snapshot, dismissHintFlash]);
+
+  // Progressive reveal: place the next missing canonical node, OR if all
+  // canonical nodes are present, wire the next missing canonical edge whose
+  // endpoints both exist. Lets a stuck beginner make one move forward without
+  // dumping the entire solution on them.
+  const handleHint = useCallback(() => {
+    if (typeof puzzle.solution !== 'function') {
+      triggerHintFlash({
+        nodeIds: [], edgeIds: [],
+        title: 'No canonical solution available for this lesson.',
+        rationale: null,
+      });
+      return;
+    }
+    const { nodes: canonNodes, edges: canonEdges } = puzzle.solution();
+    const currentNodeIds = new Set(nodes.map((n) => n.id));
+    // Only place a node when its parent (if any) already exists on the canvas
+    // — otherwise the child would dangle in canvas space with no frame.
+    const missingNode = canonNodes.find(
+      (n) => !currentNodeIds.has(n.id) && (!n.parentNode || currentNodeIds.has(n.parentNode))
+    );
+    if (missingNode) {
+      snapshot();
+      setNodes((ns) => sortParentsFirst([...ns, missingNode]));
+      const labelMeta = metaFor(missingNode) || componentTypes[missingNode.data?.type];
+      const label = labelMeta?.label || missingNode.id;
+      triggerHintFlash({
+        nodeIds: [missingNode.id], edgeIds: [],
+        title: `💡 Placed: ${label}`,
+        rationale: findHintRationale(puzzle, missingNode),
+      });
+      return;
+    }
+    const currentEdgeKeys = new Set(
+      edges.map((e) => `${e.source}→${e.target}:${e.data?.kind || 'both'}`)
+    );
+    const missingEdge = canonEdges.find((e) => {
+      const key = `${e.source}→${e.target}:${e.data?.kind || 'both'}`;
+      return (
+        !currentEdgeKeys.has(key) &&
+        currentNodeIds.has(e.source) &&
+        currentNodeIds.has(e.target)
+      );
+    });
+    if (missingEdge) {
+      snapshot();
+      setEdges((es) => [...es, missingEdge]);
+      const sourceNode = nodes.find((n) => n.id === missingEdge.source);
+      const targetNode = nodes.find((n) => n.id === missingEdge.target);
+      const sourceLabel = (sourceNode && (metaFor(sourceNode)?.label)) || missingEdge.source;
+      const targetLabel = (targetNode && (metaFor(targetNode)?.label)) || missingEdge.target;
+      triggerHintFlash({
+        nodeIds: [missingEdge.source, missingEdge.target],
+        edgeIds: [missingEdge.id],
+        title: `💡 Wired: ${sourceLabel} → ${targetLabel}`,
+        rationale: findHintEdgeRationale(puzzle, sourceNode, targetNode),
+      });
+      return;
+    }
+    triggerHintFlash({
+      nodeIds: [], edgeIds: [],
+      title: '💡 All canonical pieces are placed — click ▶ Run to verify.',
+      rationale: null,
+    });
+  }, [puzzle, nodes, edges, snapshot, triggerHintFlash]);
 
   const handleSwitchPuzzle = useCallback(
     (pid) => {
@@ -393,13 +537,14 @@ export default function App() {
       const next = puzzles[pid];
       setActivePuzzleId(pid);
       setNodes(next.initialNodes());
-      setEdges([]);
+      setEdges(next.initialEdges?.() || []);
       setSelectedNodeId(null);
       setSimResult(null);
+      dismissHintFlash();
       // Puzzle switch is a context change, not an edit — clear undo history.
       setHistory({ past: [], future: [] });
     },
-    [activePuzzleId]
+    [activePuzzleId, dismissHintFlash]
   );
 
   // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Shift+Cmd/Ctrl+Z (or Cmd/Ctrl+Y) = redo.
@@ -438,6 +583,7 @@ export default function App() {
           onRun={handleRun}
           onReset={handleReset}
           onShowSolution={handleShowSolution}
+          onHint={handleHint}
           onUndo={handleUndo}
           canUndo={history.past.length > 0}
           celebrationKey={celebrationKey}
@@ -465,6 +611,8 @@ export default function App() {
             completedPuzzleIds={completedPuzzleIds}
             collapsed={paletteCollapsed}
             onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
+            autoStack={autoStack}
+            onToggleAutoStack={() => setAutoStack((v) => !v)}
           />
           {!paletteCollapsed && (
             <ResizeHandle
@@ -477,20 +625,44 @@ export default function App() {
             />
           )}
         </div>
-        <Canvas
-          nodes={displayNodes}
-          setNodes={setNodes}
-          regions={puzzle.regions}
-          onSnapshot={snapshot}
-          edges={displayEdges}
-          setEdges={setEdges}
-          onSelectNode={setSelectedNodeId}
-          onSetShaking={setShakingState}
-          onRipple={triggerRipple}
-          onScoot={triggerScoot}
-          onDeleteNode={handleDeleteNode}
-          selectedNode={selectedNode}
-        />
+        <div className="canvas-wrap">
+          <Canvas
+            nodes={displayNodes}
+            setNodes={setNodes}
+            regions={puzzle.regions}
+            onSnapshot={snapshot}
+            edges={displayEdges}
+            setEdges={setEdges}
+            onSelectNode={setSelectedNodeId}
+            onSetShaking={setShakingState}
+            onSetDropTarget={setDropTargetId}
+            onRipple={triggerRipple}
+            onScoot={triggerScoot}
+            onDeleteNode={handleDeleteNode}
+            autoStack={autoStack}
+            selectedNode={selectedNode}
+          />
+          {hintFlash.title && (
+            <div
+              key={`hint-banner-${hintFlash.key}`}
+              className="canvas-hint-banner"
+              role="status"
+            >
+              <button
+                className="canvas-hint-banner-dismiss"
+                onClick={dismissHintFlash}
+                aria-label="Dismiss hint"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+              <div className="canvas-hint-banner-title">{hintFlash.title}</div>
+              {hintFlash.rationale && (
+                <div className="canvas-hint-banner-rationale">{hintFlash.rationale}</div>
+              )}
+            </div>
+          )}
+        </div>
         <div className="app-right-stack" data-lesson-collapsed={lessonCollapsed ? 'true' : 'false'}>
           <ResizeHandle
             orientation="horizontal"
