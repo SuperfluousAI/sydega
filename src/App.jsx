@@ -10,7 +10,7 @@ import { simulate } from './lib/simulator.js';
 import { reflowContainers } from './lib/reflow.js';
 import { prepopulateComputerHardware, snapAllParentedChildren, sortParentsFirst, worldPosition } from './lib/graph.js';
 import { componentTypes, metaFor } from './lib/componentTypes.js';
-import { findHintRationale, findHintEdgeRationale } from './lib/hintRationale.js';
+import { findNextHint } from './lib/hint.js';
 import { computeOvershoot } from './lib/containerBehavior.js';
 import { puzzles, puzzleOrder, defaultPuzzleId, evaluatePuzzle } from './lib/puzzles.js';
 
@@ -491,70 +491,71 @@ export default function App() {
     dismissHintFlash();
   }, [puzzle, snapshot, dismissHintFlash]);
 
-  // Progressive reveal: place the next missing canonical node, OR if all
-  // canonical nodes are present, wire the next missing canonical edge whose
-  // endpoints both exist. Lets a stuck beginner make one move forward without
-  // dumping the entire solution on them.
+  // Progressive reveal: ask the step-aware matcher what to do next and
+  // translate its action into the gold-pulse + canvas banner. The matcher
+  // lives in src/lib/hint.js — it matches the user's nodes to the
+  // canonical solution by TYPE / role / parent-type (not by ID), so the
+  // hint advances past whatever the player already placed instead of
+  // blindly cloning the next canonical row. See journal Part 25.
   const handleHint = useCallback(() => {
-    if (typeof puzzle.solution !== 'function') {
+    const action = findNextHint({
+      puzzle,
+      nodes,
+      edges,
+      simResult: liveSim,
+    });
+    if (!action) {
       triggerHintFlash({
         nodeIds: [], edgeIds: [],
-        title: 'No canonical solution available for this lesson.',
+        title: 'No hint available.',
         rationale: null,
       });
       return;
     }
-    const { nodes: canonNodes, edges: canonEdges } = puzzle.solution();
-    const currentNodeIds = new Set(nodes.map((n) => n.id));
-    // Only place a node when its parent (if any) already exists on the canvas
-    // — otherwise the child would dangle in canvas space with no frame.
-    const missingNode = canonNodes.find(
-      (n) => !currentNodeIds.has(n.id) && (!n.parentNode || currentNodeIds.has(n.parentNode))
-    );
-    if (missingNode) {
+    if (action.action === 'place') {
       snapshot();
-      setNodes((ns) => sortParentsFirst([...ns, missingNode]));
-      const labelMeta = metaFor(missingNode) || componentTypes[missingNode.data?.type];
-      const label = labelMeta?.label || missingNode.id;
+      setNodes((ns) => sortParentsFirst([...ns, action.node]));
+      const label = metaFor(action.node)?.label
+        || componentTypes[action.node.data?.type]?.label
+        || action.node.id;
       triggerHintFlash({
-        nodeIds: [missingNode.id], edgeIds: [],
+        nodeIds: [action.node.id], edgeIds: [],
         title: `💡 Placed: ${label}`,
-        rationale: findHintRationale(puzzle, missingNode),
+        rationale: action.rationale,
       });
       return;
     }
-    const currentEdgeKeys = new Set(
-      edges.map((e) => `${e.source}→${e.target}:${e.data?.kind || 'both'}`)
-    );
-    const missingEdge = canonEdges.find((e) => {
-      const key = `${e.source}→${e.target}:${e.data?.kind || 'both'}`;
-      return (
-        !currentEdgeKeys.has(key) &&
-        currentNodeIds.has(e.source) &&
-        currentNodeIds.has(e.target)
-      );
-    });
-    if (missingEdge) {
+    if (action.action === 'wire') {
       snapshot();
-      setEdges((es) => [...es, missingEdge]);
-      const sourceNode = nodes.find((n) => n.id === missingEdge.source);
-      const targetNode = nodes.find((n) => n.id === missingEdge.target);
-      const sourceLabel = (sourceNode && (metaFor(sourceNode)?.label)) || missingEdge.source;
-      const targetLabel = (targetNode && (metaFor(targetNode)?.label)) || missingEdge.target;
+      setEdges((es) => [...es, action.edge]);
       triggerHintFlash({
-        nodeIds: [missingEdge.source, missingEdge.target],
-        edgeIds: [missingEdge.id],
-        title: `💡 Wired: ${sourceLabel} → ${targetLabel}`,
-        rationale: findHintEdgeRationale(puzzle, sourceNode, targetNode),
+        nodeIds: [action.edge.source, action.edge.target],
+        edgeIds: [action.edge.id],
+        title: `💡 Wired: ${action.sourceLabel} → ${action.targetLabel}`,
+        rationale: action.rationale,
       });
       return;
     }
+    if (action.action === 'move') {
+      // Don't mutate the canvas — the hint here is "drag your existing X
+      // into the right place." Pulse the user's node so they see WHICH
+      // one to move; the rationale tells them WHERE.
+      triggerHintFlash({
+        nodeIds: [action.nodeId], edgeIds: [],
+        title: action.targetParentLabel
+          ? `💡 Move your ${action.targetLabel} into a ${action.targetParentLabel}`
+          : `💡 Reparent your ${action.targetLabel}`,
+        rationale: action.rationale,
+      });
+      return;
+    }
+    // 'message' — no canvas mutation, just the banner.
     triggerHintFlash({
       nodeIds: [], edgeIds: [],
-      title: '💡 All canonical pieces are placed — click ▶ Run to verify.',
-      rationale: null,
+      title: action.title,
+      rationale: action.rationale,
     });
-  }, [puzzle, nodes, edges, snapshot, triggerHintFlash]);
+  }, [puzzle, nodes, edges, liveSim, snapshot, triggerHintFlash]);
 
   const handleSwitchPuzzle = useCallback(
     (pid) => {

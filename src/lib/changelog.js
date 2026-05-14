@@ -7,6 +7,15 @@
 
 export const changelog = [
   {
+    version: '2026-05-14f',
+    date: '2026-05-14',
+    entries: [
+      'Step-aware Hint button — the Hint now matches your existing canvas to the canonical solution by TYPE (not by node id), so it advances PAST what you\'ve already placed instead of duplicating it. If you placed a CPU on Lesson 1 and click Hint, it now suggests RAM next (the actual next missing piece). When you have the right type of component but in the wrong place (e.g. a CPU on the canvas instead of inside a Computer), the Hint will tell you to move it rather than placing a second one.',
+      'Per-puzzle hint() override hook: any lesson can define its own hint(state) → action function and the matcher uses that first. Falls back to the default matcher if the override returns null or throws.',
+      'When the canonical solution is fully placed but the puzzle isn\'t passing, the Hint now reads out the first failing requirement\'s explanation instead of saying "all canonical pieces are placed."',
+    ],
+  },
+  {
     version: '2026-05-14e',
     date: '2026-05-14',
     entries: [
