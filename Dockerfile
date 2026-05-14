@@ -20,23 +20,25 @@ RUN npm run build
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2 — serve
 # ──────────────────────────────────────────────────────────────────────────
-FROM nginx:1.27-alpine
+# `nginx-unprivileged` is purpose-built for running as a non-root user on
+# Pod Security Standards-restricted clusters: cache dirs are pre-chowned to
+# the nginx user, default listen is 8080, no `user` directive in nginx.conf.
+# Plain `nginx:alpine` can't write to /var/cache/nginx/client_temp without
+# root capabilities, which the platform's chart drops.
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 # Replace the default site config so SPA routes don't 404 (every path
 # falls back to index.html; the React Router-less app still benefits
 # because deep links to /lessons/:id etc. would 404 otherwise).
-RUN rm /etc/nginx/conf.d/default.conf
+USER root
+RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx.conf /etc/nginx/conf.d/sydega.conf
 
 # The Vite build output.
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Run nginx as a non-root user (the Pod Security Standards `baseline` profile
-# applied by the platform Helm chart drops capabilities and disallows
-# privilege escalation; nginx:1.27-alpine ships an `nginx` user but the
-# default config still expects to bind low ports as root. We listen on 8080
-# instead — Service maps :80 → :8080. See nginx.conf.).
-USER nginx
+# nginx-unprivileged's nginx user is UID 101.
+USER 101
 
 EXPOSE 8080
 
