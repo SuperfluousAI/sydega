@@ -7,6 +7,13 @@
 
 export const changelog = [
   {
+    version: '2026-05-14g',
+    date: '2026-05-14',
+    entries: [
+      'Lesson 1 fix: clicking Hint repeatedly used to make the Computer\'s frame visually grow outward to wrap each newly-placed child — the children landed at canonical positions sized for a 420×240 Computer but the user\'s Computer was only 340×220, so each child overhung and the frame stretched to cover it. The initial Computer is now 420×240, matching the canonical layout, so children fit cleanly and the frame stays anchored.',
+    ],
+  },
+  {
     version: '2026-05-14f',
     date: '2026-05-14',
     entries: [

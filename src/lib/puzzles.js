@@ -107,21 +107,25 @@ export const puzzles = {
       'In this lesson, the Program on the canvas tells you exactly what it needs. Your job: drag a Computer onto the canvas, drop the Program into it, and drop in enough CPU, RAM, and Disk to meet its needs. Watch the Computer\'s header — it shows what hardware it currently has, live.',
     ],
     initialNodes: () => [
-      // Computer sits up top; Program sits centered below it. Operator
-      // pushback 2026-05-14: the Program was at (80, 200) — tucked into
-      // the upper-left corner, off-center on the canvas. Now: Program is
-      // horizontally centered with the Computer (which is 340 wide → x
-      // center 280+170=450, so Program at 365 puts its 170-wide body
-      // centered on x=450), and vertically offset below the Computer's
-      // 220-tall body.
+      // Computer + Program centered. Operator pushback 2026-05-14:
+      //   1) "Program was off-center on the canvas." Moved it below the
+      //      Computer, horizontally centered.
+      //   2) "Hint click makes the parent move." It didn't move (data-x/y
+      //      stayed put), but its CSS frame extended past its underlying
+      //      bounds to wrap canonical-positioned children that overhung
+      //      a too-small Computer (340×220). The fix: ship the initial
+      //      Computer at the canonical 420×240 size so canonical child
+      //      positions (used by the Hint) fit cleanly with zero overshoot.
+      // Computer center = (280 + 420/2, 80 + 240/2) = (490, 200).
+      // Program center = 490, so Program.x = 490 - 170/2 = 405.
       {
         id: 'computer-1',
         type: 'system',
         position: { x: 280, y: 80 },
-        style: { width: 340, height: 220 },
+        style: { width: 420, height: 240 },
         data: { type: 'computer', config: {} },
       },
-      node('program-1', 'program', { x: 365, y: 380 }, {
+      node('program-1', 'program', { x: 405, y: 380 }, {
         requires_cores: 4,
         requires_ram_gb: 8,
         requires_disk_gb: 50,

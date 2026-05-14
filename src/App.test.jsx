@@ -284,6 +284,95 @@ describe('App visual contract — drop-target highlight', () => {
   });
 });
 
+describe('App visual contract — parent Computer stays put when Hint is clicked repeatedly', () => {
+  // Reported 2026-05-14 (Part 25): "go through lesson 1 and run through the
+  // puzzle by clicking hint, the parent still moves." These tests pin the
+  // Computer's position state across a full L1 hint walkthrough — click
+  // Hint until the puzzle is solved (or stops adding nodes), assert the
+  // Computer's data-x/data-y never change AND the Computer's parentNode
+  // stays null (top-level) throughout.
+
+  function getComputerSnapshot(container) {
+    const c = container.querySelector('[data-id="computer-1"]');
+    if (!c) return null;
+    return {
+      x: c.getAttribute('data-x'),
+      y: c.getAttribute('data-y'),
+      parent: c.getAttribute('data-parent') || '',
+    };
+  }
+
+  // REGRESSION: when a Hint-placed child overhangs the Computer's bounds,
+  // the CSS frame extends to wrap it (--over-right/--over-bottom). That
+  // visual extension reads as "the parent moved" to the player. Catch it
+  // at the data level — every Hint-placed child should fit inside the
+  // user's actual Computer bounds, so no overshoot ever fires.
+  it('Hint clicks on L1 always place children that fit inside the Computer', () => {
+    const { container } = render(<App />);
+    const computer = container.querySelector('[data-id="computer-1"]');
+    expect(computer).not.toBeNull();
+
+    // L1's initial Computer carries an explicit style; read its width/height
+    // from the puzzle definition rather than the DOM (the mock doesn't
+    // render style). We use the data-x / data-y for position.
+    const computerX = Number(computer.getAttribute('data-x'));
+    const computerY = Number(computer.getAttribute('data-y'));
+    // Pull the canonical style from initialNodes (the L1 Computer is the
+    // first node and carries `style: { width, height }`).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { puzzles } = require('./lib/puzzles.js');
+    const computerStyle = puzzles.buildComputer.initialNodes()
+      .find((n) => n.data.type === 'computer').style;
+    const compRight = computerX + computerStyle.width;
+    const compBottom = computerY + computerStyle.height;
+
+    // Default child dimensions (CPU/RAM/Disk/Program all 170×90 unless
+    // overridden — none of them override).
+    const CHILD_W = 170;
+    const CHILD_H = 90;
+
+    const hintBtn = container.querySelector('.hint-button');
+    for (let i = 0; i < 4; i += 1) {
+      act(() => { fireEvent.click(hintBtn); });
+      // Find any child node parented to the Computer that wasn't there
+      // before — assert it fits inside the Computer's world bounds.
+      const children = Array.from(
+        container.querySelectorAll('[data-parent="computer-1"]')
+      );
+      for (const child of children) {
+        const localX = Number(child.getAttribute('data-x'));
+        const localY = Number(child.getAttribute('data-y'));
+        const worldX = computerX + localX;
+        const worldY = computerY + localY;
+        // Right edge of child must be ≤ Computer's right edge.
+        expect(worldX + CHILD_W).toBeLessThanOrEqual(compRight);
+        // Bottom edge of child must be ≤ Computer's bottom edge.
+        expect(worldY + CHILD_H).toBeLessThanOrEqual(compBottom);
+      }
+    }
+  });
+
+  it('Hint click ×5 on L1 never mutates the Computer\'s position or parent', () => {
+    const { container } = render(<App />);
+    const before = getComputerSnapshot(container);
+    expect(before).not.toBeNull();
+    expect(before.x).toBe('280');
+    expect(before.y).toBe('80'); // L1 initial (Program moved below)
+    expect(before.parent).toBe('');
+
+    const hintBtn = container.querySelector('.hint-button');
+    expect(hintBtn).not.toBeNull();
+    // Click Hint several times — through CPU, RAM, Disk, Program, then "done".
+    // Each click runs the placement + sibling-scoot pipeline. The Computer
+    // must NOT shift through any of these calls.
+    for (let i = 0; i < 6; i += 1) {
+      act(() => { fireEvent.click(hintBtn); });
+      const after = getComputerSnapshot(container);
+      expect(after).toEqual(before);
+    }
+  });
+});
+
 describe('App visual contract — parent Computer stays put when children are dragged', () => {
   // The user reported: "lesson 1 - dragging components still move the parent.
   // it's weird. you should have tests to catch this."
