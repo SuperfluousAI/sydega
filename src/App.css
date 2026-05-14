@@ -1385,6 +1385,99 @@
   color: #0b0a1a;
 }
 
+/* Sort + filter — single button below the track toggle. Click opens a
+   popover with sort-by chips + difficulty filter chips. The button shows
+   the current sort + "· filtered" if any difficulty is hidden. */
+.lesson-sort-filter {
+  position: relative;
+  margin-bottom: 8px;
+}
+.lesson-sort-filter-trigger {
+  width: 100%;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.lesson-sort-filter-trigger:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.lesson-sort-filter-caret {
+  font-size: 9px;
+  line-height: 1;
+}
+.lesson-sort-filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 5;
+}
+.lesson-sort-filter-section {
+  margin-bottom: 8px;
+}
+.lesson-sort-filter-section:last-child { margin-bottom: 0; }
+.lesson-sort-filter-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.lesson-sort-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.sf-chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sf-chip:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.sf-chip.active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: #6366f1;
+  color: var(--text);
+}
+
+/* Difficulty dots — small colored circles. Used both in the lesson list
+   row (next to the number) AND inside the filter chips so the visual
+   language is consistent. Easy = green, medium = yellow, hard = red. */
+.difficulty-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.difficulty-dot-easy   { background: #34d399; }
+.difficulty-dot-medium { background: #fbbf24; }
+.difficulty-dot-hard   { background: #f87171; }
+
 /* Palette header with the collapse toggle on the right. */
 .palette-header {
   display: flex;

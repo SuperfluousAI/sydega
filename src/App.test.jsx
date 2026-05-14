@@ -300,7 +300,7 @@ describe('App visual contract — parent Computer stays put when children are dr
   it('dragStop reparents a Program into the Computer WITHOUT moving the Computer', () => {
     const { container } = render(<App />);
     const before = getComputerXY(container);
-    expect(before).toEqual({ x: '280', y: '140' }); // L1 initial computer position
+    expect(before).toEqual({ x: '280', y: '80' }); // L1 initial computer position (moved up to give Program room below)
 
     // Drag the Program (top-level, at 80,200) so its center lands inside
     // the Computer (world bounds 280..620 x 140..360). Program default
@@ -527,7 +527,7 @@ describe('App visual contract — palette drag drop-target', () => {
     const { container } = render(<App />);
     const wrap = container.querySelector('.canvas-wrapper');
     expect(wrap).not.toBeNull();
-    // Inside computer-1 world bounds (280..620, 140..360).
+    // Inside computer-1 world bounds (280..620, 80..300).
     act(() => { fireDragOver(wrap, 450, 250); });
     const computer = container.querySelector('[data-id="computer-1"]');
     expect(computer.className).toMatch(/\bdrop-target\b/);
@@ -547,7 +547,7 @@ describe('App visual contract — palette drag drop-target', () => {
     const wrap = container.querySelector('.canvas-wrapper');
 
     // Lesson 1: Computer at world (280, 140) sized 340×220 → bounds
-    // (280..620, 140..360). Drop cursor at (270, 250): 10px LEFT of the
+    // (280..620, 80..300). Drop cursor at (270, 250): 10px LEFT of the
     // Computer's left edge. CPU default size 170×90 → center at (355, 295)
     // which IS inside the Computer.
     const beforeCount = container.querySelectorAll('.react-flow__node-system').length;
@@ -580,7 +580,7 @@ describe('App visual contract — palette drag drop-target', () => {
     const computerAfter = container.querySelector('[data-id="computer-1"]');
     expect(computerAfter.getAttribute('data-y')).toBe(computerYBefore);
     expect(computerAfter.getAttribute('data-x')).toBe('280');
-    expect(computerAfter.getAttribute('data-y')).toBe('140');
+    expect(computerAfter.getAttribute('data-y')).toBe('80');
   });
 
   it('drops to top-level only when the component\'s center is clearly outside any container', () => {
@@ -588,7 +588,7 @@ describe('App visual contract — palette drag drop-target', () => {
     const wrap = container.querySelector('.canvas-wrapper');
 
     // Drop far to the left of everything — cursor (50, 50), center (135, 95):
-    // outside Computer's (280..620, 140..360) AND outside Program at (80,200).
+    // outside Computer's (280..620, 80..300) AND outside Program at (80,200).
     act(() => {
       const evt = new Event('drop', { bubbles: true, cancelable: true });
       Object.assign(evt, {

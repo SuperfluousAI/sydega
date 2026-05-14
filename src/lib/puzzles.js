@@ -40,6 +40,7 @@ function edge(from, to, kind) {
 function jsLesson({
   id,
   order,
+  difficulty = 'medium',
   title,
   blurb,
   background,
@@ -53,6 +54,7 @@ function jsLesson({
     id,
     order,
     track: 'javascript',
+    difficulty,
     title,
     blurb,
     background,
@@ -93,6 +95,7 @@ export const puzzles = {
   buildComputer: {
     id: 'buildComputer',
     order: 1,
+    difficulty: 'easy',
     title: 'Build a Computer',
     blurb:
       'Code runs on a computer — and a computer is a box made of CPU, RAM, and disk. Drag the Program INTO the Computer, then drag a CPU, RAM, and Disk in too. The Computer holds them; no wires needed.',
@@ -104,14 +107,21 @@ export const puzzles = {
       'In this lesson, the Program on the canvas tells you exactly what it needs. Your job: drag a Computer onto the canvas, drop the Program into it, and drop in enough CPU, RAM, and Disk to meet its needs. Watch the Computer\'s header — it shows what hardware it currently has, live.',
     ],
     initialNodes: () => [
+      // Computer sits up top; Program sits centered below it. Operator
+      // pushback 2026-05-14: the Program was at (80, 200) — tucked into
+      // the upper-left corner, off-center on the canvas. Now: Program is
+      // horizontally centered with the Computer (which is 340 wide → x
+      // center 280+170=450, so Program at 365 puts its 170-wide body
+      // centered on x=450), and vertically offset below the Computer's
+      // 220-tall body.
       {
         id: 'computer-1',
         type: 'system',
-        position: { x: 280, y: 140 },
+        position: { x: 280, y: 80 },
         style: { width: 340, height: 220 },
         data: { type: 'computer', config: {} },
       },
-      node('program-1', 'program', { x: 80, y: 200 }, {
+      node('program-1', 'program', { x: 365, y: 380 }, {
         requires_cores: 4,
         requires_ram_gb: 8,
         requires_disk_gb: 50,
@@ -148,6 +158,7 @@ export const puzzles = {
   homeNetwork: {
     id: 'homeNetwork',
     order: 2,
+    difficulty: 'easy',
     title: 'On the Home Network',
     blurb:
       'A Router creates a home network and hands out an IP address to every device that connects to it. Wire your Computer and a Phone to the Router and they share a LAN — they can talk to each other but the wider internet can\'t reach in.',
@@ -227,6 +238,7 @@ export const puzzles = {
   reachTheInternet: {
     id: 'reachTheInternet',
     order: 3,
+    difficulty: 'easy',
     title: 'Reach the Internet',
     // Visual regions on the canvas — purely decorative, filtered out by the
     // simulator. The pedagogy: "where you drop something tells you what
@@ -323,6 +335,7 @@ export const puzzles = {
   pointDomain: {
     id: 'pointDomain',
     order: 4,
+    difficulty: 'easy',
     title: 'Point a Domain at a VPS',
     blurb:
       'A visitor types myapp.com into a browser. To reach your VPS, the request walks: Visitor → Domain → DNS Record → VPS. The DNS Record\'s "points to" must match the VPS\'s public IP, or the visitor lands nowhere.',
@@ -358,6 +371,7 @@ export const puzzles = {
   addLoadBalancer: {
     id: 'addLoadBalancer',
     order: 5,
+    difficulty: 'easy',
     title: 'Add a Load Balancer',
     blurb:
       'One VPS is being crushed by 3000 req/s but each VPS only handles 1000. Put a Load Balancer in front and add more VPSes so requests get spread out. (Capacity divides evenly across the LB\'s outgoing edges.)',
@@ -413,6 +427,7 @@ export const puzzles = {
   persistWithDatabase: {
     id: 'persistWithDatabase',
     order: 6,
+    difficulty: 'easy',
     title: 'Persist with a Database',
     blurb:
       'Your App Server handles requests but every restart wipes the data. Add a Database so writes survive. The shape is the simplest stateful pattern: Client → App Server → Database. Reads + writes both pass through the App Server and land in the DB.',
@@ -455,6 +470,7 @@ export const puzzles = {
   addACache: {
     id: 'addACache',
     order: 7,
+    difficulty: 'medium',
     title: 'Add a Cache',
     blurb:
       'Reads are hammering the Database. Stick an in-memory Cache between the App Server and the DB. With a high hit rate, most reads never reach disk — the DB sees only the misses. Internal caches (Redis, Memcached) are the bread-and-butter speed-up for any read-heavy workload.',
@@ -507,6 +523,7 @@ export const puzzles = {
   readWriteSplit: {
     id: 'readWriteSplit',
     order: 8,
+    difficulty: 'medium',
     title: 'Read / Write Split',
     blurb:
       'Caching writes is a trap — the cache fills with values that contradict the source of truth. Real systems split read paths from write paths: reads go through the Cache (and only miss to the DB); writes bypass the Cache entirely and land on the DB directly. Click an edge to cycle its label (R / W / both) — wire reads through the cache, writes straight to the DB.',
@@ -568,6 +585,7 @@ export const puzzles = {
   urlShortener: {
     id: 'urlShortener',
     order: 9,
+    difficulty: 'medium',
     title: 'URL Shortener',
     blurb:
       'Build a system that serves a high read-to-write URL shortener at the target load. Reads dominate; cold reads hit the database. Hint: a cache and/or more app servers will be needed as load grows.',
@@ -631,6 +649,7 @@ export const puzzles = {
   clusterDatabase: {
     id: 'clusterDatabase',
     order: 10,
+    difficulty: 'medium',
     title: 'Add a Database Load Balancer',
     blurb:
       'A flood of writes (3000 req/s, all writes) is hammering your one Database. A Cache won\'t help — caches only absorb reads. The DB itself caps at 1000 req/s. You need more Databases, plus a Load Balancer in front so the App doesn\'t have to know which DB to ask. (Simplification: in production, multiple write-capable DBs need sharding by key or a multi-master setup — see simplifications.md. The pattern this lesson teaches — "always route DB traffic through an LB" — is what makes the next lesson, read replicas, possible.)',
@@ -713,6 +732,7 @@ export const puzzles = {
   newsfeedCore: {
     id: 'newsfeedCore',
     order: 13,
+    difficulty: 'hard',
     title: 'Newsfeed Core',
     blurb:
       'Build a Twitter-style mixed workload. Two clients with very different shapes: 100 Posters/sec writing new tweets, 1000 Readers/sec loading their feed. Same LB at the edge, but the paths through diverge — writes need to fan out asynchronously (so the API ack is fast), reads need to hit a cache (or you melt the DB). Two parallel pipelines, two sets of failure modes that can happen independently. Use edge labels (R / W / R+W) to route the two workloads. (Simplification: workers populate the feed cache implicitly — real systems have per-user inbox caches; we model the aggregate. See simplifications.md.)',
@@ -819,6 +839,7 @@ export const puzzles = {
   addCdn: {
     id: 'addCdn',
     order: 14,
+    difficulty: 'medium',
     title: 'Add a CDN at the Edge',
     blurb:
       'Your service handles 20,000 reads/sec — feed reads, profile data, avatars. Even with an internal Cache absorbing 80% of the DB load, every one of those 20k requests still pays the full LB → App → Cache round-trip (~24ms mean). For static or precomputed content you can do dramatically better: put a CDN at the very edge of your system — *before* the LB — and serve 95%+ of traffic from a node geographically close to the user (~1ms). The internal architecture only sees the misses. Targets: reads served ≥ 99%, mean latency ≤ 5ms, and you must use a CDN. (Simplification: real CDNs have hundreds of geographic PoPs — Cloudflare, Akamai, AWS CloudFront — we model the aggregate as one node. See simplifications.md.)',
@@ -890,6 +911,7 @@ export const puzzles = {
   twitterAtScale: {
     id: 'twitterAtScale',
     order: 15,
+    difficulty: 'hard',
     title: 'Twitter at Scale',
     blurb:
       'Curriculum capstone. 3000 Posters/sec + 50,000 Readers/sec. To pass, stack every pattern from prior lessons: CDN at the edge (Lesson 10), App pool behind an LB (Lessons 4–5), internal Cache (Lesson 5), DB cluster behind an LB (Lesson 6), Read Replicas behind their own LB (Lesson 7), Queue + Worker fanout (Lessons 8–9), CDN (Lesson 10). The whole curriculum, applied at once. (Simplification: real Twitter also has media via Object Storage + CDN, search via specialized indices, geographic regions — see simplifications.md for what we still defer.)',
@@ -1031,6 +1053,7 @@ export const puzzles = {
   asyncNotifications: {
     id: 'asyncNotifications',
     order: 12,
+    difficulty: 'medium',
     title: 'Async Notification Pipeline',
     blurb:
       'Your service handles 1000 notifications/sec — push, email, SMS, expensive third-party calls (~200ms each). Sending synchronously means clients wait on the external provider, and when the provider degrades your API latency degrades with it. Decouple: accept the notification, ack the client immediately, push the work onto a Queue, drain it asynchronously with a Worker pool. You now need TWO success rates: sync (API acks ≥ 99%) and background (Workers drain queue ≥ 99%). Sync p99 ≤ 100ms keeps the API snappy. Hint: the bottleneck might not be where you expect — open the metrics panel and watch both rates.',
@@ -1118,6 +1141,7 @@ export const puzzles = {
   readReplicas: {
     id: 'readReplicas',
     order: 11,
+    difficulty: 'medium',
     title: 'Replicate Your Reads',
     blurb:
       'Reads are now 80% of the load (1500 req/s overall). Last lesson taught the DB Load Balancer pattern; now apply it asymmetrically. Read Replicas serve copies for reads but reject writes. Writes go directly to the Primary; reads fan out through a Load Balancer to the replica pool. Click each edge to label it R / W / R+W.',
@@ -1187,6 +1211,7 @@ export const puzzles = {
   streamProcessingAtScale: {
     id: 'streamProcessingAtScale',
     order: 17,
+    difficulty: 'hard',
     title: 'Stream Processing at Scale (Design Kafka)',
     blurb:
       'Design a distributed commit log — what Kafka is. Three producer services emit 60,000 events/sec total. The canonical answer needs five interlocking ideas: (1) **partition the topic** — a Partition Router (Load Balancer) hashes events into N partitioned Queues, with `pubsub: true` so each partition is a real Kafka topic (every consumer group sees every event); (2) **distribute partitions across brokers** — broker regions on the canvas show where each partition\'s leader lives and where its RF=3 replicas (decorative markers) sit on the *other* brokers, the durability story Kafka rests on; (3) **multiple consumer groups** — the same partitioned topic feeds an independent real-time consumer group and an analytics consumer group, each draining the full stream (this is *the* Kafka-vs-RabbitMQ differentiator); (4) **shared sink cluster per group** — workers → Storage LB → 3-DB cluster (reuses Lesson 6\'s routing pattern on the sink side); (5) **a control plane** — the KRaft Controllers decorative node coordinates leader election + ISR tracking. Property panel teaching aids cover acks=all + min.insync.replicas semantics. *Hit "Read full lesson" for what we don\'t model on canvas, what\'s "extra extra" beyond the whiteboard, the partition-density caveat, and Kafka 4.0+ refinements.*',
@@ -1487,6 +1512,7 @@ export const puzzles = {
   fileStorageAtScale: {
     id: 'fileStorageAtScale',
     order: 18,
+    difficulty: 'hard',
     title: 'File Storage at Scale (Design Dropbox)',
     slug: 'Design a cloud file storage service like Dropbox / Google Drive. Three workloads (metadata, uploads, downloads) + sync fan-out.',
     blurb:
@@ -1711,6 +1737,7 @@ export const puzzles = {
   tinyurlAtScale: {
     id: 'tinyurlAtScale',
     order: 16,
+    difficulty: 'hard',
     title: 'TinyURL at Interview Scale',
     blurb:
       'The canonical FAANG interview question: design a URL shortener at scale. 100 URL creates/sec from Posters, 10,000 redirects/sec from Visitors, plus 500 analytics events/sec that log every origin-side click. You\'re defending 8 questions interviewers ask: ID generation, collision avoidance, hot keys, caching, analytics logging, rate limiting, malicious URLs, link expiration. This puzzle answers 5 architecturally (CDN, KGS, RateLimiter, Cache, Queue+Workers); the other 3 (malicious filtering, TTL, custom aliases) are documented in simplifications.md as out-of-scope-for-the-canvas. Targets: reads ≥ 99%, writes ≥ 99%, background ≥ 99%, sync p99 ≤ 100ms, must use CDN + Rate Limiter + KGS + Queue.',
@@ -1861,6 +1888,7 @@ export const puzzles = {
   ecommerceAtScale: {
     id: 'ecommerceAtScale',
     order: 19,
+    difficulty: 'hard',
     title: 'E-Commerce at Scale (Design Amazon)',
     slug: 'Design an Amazon-class e-commerce site. Three workloads with different consistency regimes + an async saga at checkout.',
     blurb:
@@ -2042,6 +2070,7 @@ export const puzzles = {
   flashSaleAtScale: {
     id: 'flashSaleAtScale',
     order: 19.1,
+    difficulty: 'hard',
     title: 'Flash Sale Spike (Bulkhead a Hot SKU)',
     slug: 'Follow-up to L19: a 500 r/s flash-sale spike for a hot SKU melts the shared order tier. Protect normal checkout by giving the spike its own lane.',
     blurb:
@@ -2156,6 +2185,7 @@ export const puzzles = {
   searchAtScale: {
     id: 'searchAtScale',
     order: 19.2,
+    difficulty: 'hard',
     title: 'Search at Scale (ElasticSearch + indexing pipeline)',
     slug: 'Follow-up to L19: add a separate search architecture. Sharded search index + async indexing pipeline from the catalog. Two layers, one read path, one write path.',
     blurb:
@@ -2310,6 +2340,7 @@ export const puzzles = {
   customProgramSandbox: {
     id: 'customProgramSandbox',
     order: 22,
+    difficulty: 'medium',
     title: 'Custom Program — Admission Control',
     blurb:
       'Write JavaScript that protects an overloaded VPS. A Client sends 2000 read req/s to a VPS that handles 1000 — drop a Custom Program in the middle and write a transform() that lets at most 1000 req/s through. Admission control: shed surplus at the gate so the expensive downstream isn\'t the bottleneck.',
@@ -2419,6 +2450,7 @@ export const puzzles = {
   j1Hello: jsLesson({
     id: 'j1Hello',
     order: 'J1',
+    difficulty: 'easy',
     title: 'Hello, transform()',
     blurb:
       'Welcome to the JavaScript track. Every lesson is the same shape: a Text Input, a Custom Program (your code), and a Text Output. Click the Custom Program node to edit its code. Your function should return "Hello, " followed by whatever the Text Input emits. Press Run to test your code against the cases below.',
@@ -2449,6 +2481,7 @@ export const puzzles = {
   j2Uppercase: jsLesson({
     id: 'j2Uppercase',
     order: 'J2',
+    difficulty: 'easy',
     title: 'Uppercase',
     blurb:
       'Strings in JavaScript have built-in methods. Return the input converted to uppercase. Hint: `.toUpperCase()`.',
@@ -2477,6 +2510,7 @@ export const puzzles = {
   j3Reverse: jsLesson({
     id: 'j3Reverse',
     order: 'J3',
+    difficulty: 'easy',
     title: 'Reverse the input',
     blurb:
       'Reverse the characters of the input. JS doesn\'t have a `.reverse()` method on strings — but arrays do. The idiomatic trick: split into an array of characters, reverse the array, join it back.',
@@ -2508,6 +2542,7 @@ export const puzzles = {
   j4WordCount: jsLesson({
     id: 'j4WordCount',
     order: 'J4',
+    difficulty: 'easy',
     title: 'Count the words',
     blurb:
       'Count the number of words in the input. A word is anything separated by whitespace. Return the count as a string (every wire in this track carries a string).',
@@ -2541,6 +2576,7 @@ export const puzzles = {
   j5ConditionalGreeting: jsLesson({
     id: 'j5ConditionalGreeting',
     order: 'J5',
+    difficulty: 'easy',
     title: 'Conditional greeting',
     blurb:
       'If the input is empty, return "(no name)". Otherwise, return "Hi, " + input. Practice writing an if/else.',
@@ -2574,6 +2610,7 @@ export const puzzles = {
   j6Repeat: jsLesson({
     id: 'j6Repeat',
     order: 'J6',
+    difficulty: 'medium',
     title: 'Repeat the input',
     blurb:
       'Return the input repeated 3 times, separated by " | ". For "hi" the output should be "hi | hi | hi". Use a loop.',
@@ -2610,6 +2647,7 @@ export const puzzles = {
   j7FirstWord: jsLesson({
     id: 'j7FirstWord',
     order: 'J7',
+    difficulty: 'medium',
     title: 'Extract the first word',
     blurb:
       'Return just the first word of the input. Words are separated by spaces. If the input is empty, return "".',
@@ -2645,6 +2683,7 @@ export const puzzles = {
   j8ValidateEmail: jsLesson({
     id: 'j8ValidateEmail',
     order: 'J8',
+    difficulty: 'medium',
     title: 'Validate an email',
     blurb:
       'Return "valid" if the input looks like an email (has one @ with at least one character on each side, plus a "." after the @), else "invalid". Use a regex.',
@@ -2679,6 +2718,7 @@ export const puzzles = {
   j9JsonInOut: jsLesson({
     id: 'j9JsonInOut',
     order: 'J9',
+    difficulty: 'medium',
     title: 'JSON in, JSON out',
     blurb:
       'The input is a JSON object string like `{"name":"world"}`. Parse it, uppercase the `name` field, and return the result as a JSON string. **This lesson is the serializer story made literal** — real microservices do this exact dance at every HTTP boundary.',
@@ -2725,6 +2765,7 @@ export const puzzles = {
   j10CustomProtocol: jsLesson({
     id: 'j10CustomProtocol',
     order: 'J10',
+    difficulty: 'hard',
     title: 'Custom protocol → JSON',
     blurb:
       'The input is a tiny key/value protocol: `key=value` pairs, one per line. Parse it into a JSON object. For input `name=world\\nage=5`, return `{"name":"world","age":"5"}`. All values stay as strings.',
@@ -2768,6 +2809,7 @@ export const puzzles = {
     id: 'j11ComposeTwo',
     order: 'J11',
     track: 'javascript',
+    difficulty: 'medium',
     title: 'Compose two programs',
     blurb:
       'This lesson starts with TWO Custom Programs wired in series: Input → Program A → Program B → Output. Make Program A uppercase the input and Program B reverse it. The graph is your pipeline.',
@@ -2843,6 +2885,7 @@ export const puzzles = {
   j12FizzBuzz: jsLesson({
     id: 'j12FizzBuzz',
     order: 'J12',
+    difficulty: 'medium',
     title: 'FizzBuzz',
     blurb:
       'The classic. Input is a number as a string. If divisible by 3 → "Fizz". If by 5 → "Buzz". If by both → "FizzBuzz". Otherwise return the number unchanged.',

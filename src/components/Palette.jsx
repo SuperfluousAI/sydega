@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   componentTypes,
   paletteMetaFor,
@@ -6,6 +6,40 @@ import {
 } from '../lib/componentTypes.js';
 import { puzzles, puzzleOrder } from '../lib/puzzles.js';
 import { useScrollHints } from './useScrollHints.js';
+
+// Sort/filter UI state. Difficulty ranking when sorting by difficulty —
+// easy first, hard last; ties broken by order. Filter starts with all
+// three on; can't filter to nothing (the toggle re-enables the last on).
+const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 };
+const DEFAULT_DIFFICULTY_FILTER = { easy: true, medium: true, hard: true };
+
+// Sort comparator. `number` uses the puzzle's order field (a number for
+// systems puzzles, a 'J1'-'J12' string for the JS track — both compare
+// usefully via < on their native types within a track filter).
+function compareForSort(a, b, sortBy) {
+  const pa = puzzles[a];
+  const pb = puzzles[b];
+  if (sortBy === 'difficulty') {
+    const da = DIFFICULTY_RANK[pa.difficulty || 'medium'] ?? 1;
+    const db = DIFFICULTY_RANK[pb.difficulty || 'medium'] ?? 1;
+    if (da !== db) return da - db;
+  }
+  // Default + tiebreaker: by order. Numbers compared numerically; strings
+  // ('J1', 'J2', 'J10') compared lexicographically with a natural-number
+  // tweak so J10 sorts after J9 instead of after J1.
+  const oa = pa.order;
+  const ob = pb.order;
+  if (typeof oa === 'number' && typeof ob === 'number') return oa - ob;
+  if (typeof oa === 'string' && typeof ob === 'string') {
+    // Extract numeric suffix when present.
+    const ma = oa.match(/(\d+(?:\.\d+)?)/);
+    const mb = ob.match(/(\d+(?:\.\d+)?)/);
+    if (ma && mb) return Number(ma[1]) - Number(mb[1]);
+    return oa < ob ? -1 : oa > ob ? 1 : 0;
+  }
+  // Cross-type — shouldn't happen within a single track, but fall back.
+  return String(oa).localeCompare(String(ob));
+}
 
 // Stable identity for an allowedComponents entry. Role-aware types use
 // `type:role`; plain types use the bare typeKey. Powers the "is this entry
@@ -86,6 +120,56 @@ export default function Palette({
   // More-components panel is collapsed by default — it's an escape hatch
   // from the lesson's curated component list, not the primary surface.
   const [moreOpen, setMoreOpen] = useState(false);
+
+  // Sort + filter state — UI only, no consumer outside Palette. Persisted
+  // to localStorage so mentee/operator preferences survive reloads.
+  const [sortBy, setSortBy] = useState(() => {
+    try {
+      const v = localStorage.getItem('sdg-lesson-sort');
+      return v === 'difficulty' ? 'difficulty' : 'number';
+    } catch { return 'number'; }
+  });
+  const [difficultyFilter, setDifficultyFilter] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sdg-lesson-difficulty-filter');
+      if (raw) return { ...DEFAULT_DIFFICULTY_FILTER, ...JSON.parse(raw) };
+    } catch { /* ignore */ }
+    return DEFAULT_DIFFICULTY_FILTER;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('sdg-lesson-sort', sortBy); } catch { /* ignore */ }
+  }, [sortBy]);
+  useEffect(() => {
+    try {
+      localStorage.setItem('sdg-lesson-difficulty-filter', JSON.stringify(difficultyFilter));
+    } catch { /* ignore */ }
+  }, [difficultyFilter]);
+  const [sortFilterOpen, setSortFilterOpen] = useState(false);
+  const sortFilterRef = useRef(null);
+  // Close on outside-click + Escape.
+  useEffect(() => {
+    if (!sortFilterOpen) return;
+    const onDoc = (e) => {
+      if (!sortFilterRef.current?.contains(e.target)) setSortFilterOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setSortFilterOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [sortFilterOpen]);
+  // Refuse to set the filter to "nothing on" — the user would see an empty
+  // list and the affordance to recover is hidden in the popover. Forcing a
+  // re-enable keeps the surface responsive.
+  const toggleDifficulty = (d) => {
+    setDifficultyFilter((prev) => {
+      const next = { ...prev, [d]: !prev[d] };
+      if (!next.easy && !next.medium && !next.hard) return prev;
+      return next;
+    });
+  };
 
   // Lessons list scroll-hint. As the curriculum grew past 19 lessons the
   // list pushed the Components section off-screen; now the list is height-
@@ -179,6 +263,60 @@ export default function Palette({
           </button>
         </div>
       )}
+      <div className="lesson-sort-filter" ref={sortFilterRef}>
+        <button
+          type="button"
+          className="lesson-sort-filter-trigger"
+          onClick={() => setSortFilterOpen((v) => !v)}
+          aria-expanded={sortFilterOpen}
+          title="Sort and filter the lesson list"
+        >
+          <span>
+            Sort: {sortBy === 'number' ? '#' : 'difficulty'}
+            {(!difficultyFilter.easy || !difficultyFilter.medium || !difficultyFilter.hard) && ' · filtered'}
+          </span>
+          <span className="lesson-sort-filter-caret">{sortFilterOpen ? '▾' : '▸'}</span>
+        </button>
+        {sortFilterOpen && (
+          <div className="lesson-sort-filter-popover" role="dialog" aria-label="Sort and filter">
+            <div className="lesson-sort-filter-section">
+              <div className="lesson-sort-filter-label">Sort by</div>
+              <div className="lesson-sort-filter-chips">
+                <button
+                  type="button"
+                  className={`sf-chip ${sortBy === 'number' ? 'active' : ''}`}
+                  onClick={() => setSortBy('number')}
+                >
+                  Number
+                </button>
+                <button
+                  type="button"
+                  className={`sf-chip ${sortBy === 'difficulty' ? 'active' : ''}`}
+                  onClick={() => setSortBy('difficulty')}
+                >
+                  Difficulty
+                </button>
+              </div>
+            </div>
+            <div className="lesson-sort-filter-section">
+              <div className="lesson-sort-filter-label">Show difficulty</div>
+              <div className="lesson-sort-filter-chips">
+                {['easy', 'medium', 'hard'].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    className={`sf-chip sf-chip-difficulty sf-chip-${d} ${difficultyFilter[d] ? 'active' : ''}`}
+                    onClick={() => toggleDifficulty(d)}
+                  >
+                    <span className={`difficulty-dot difficulty-dot-${d}`} />
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
       <div className="lessons-list-wrap">
         {showLessonsUpHint && (
           <div className="puzzle-reading-scroll-hint puzzle-reading-scroll-hint--up" aria-hidden="true">
@@ -194,12 +332,19 @@ export default function Palette({
             // tagged `track: 'javascript'` show up in the JS pill.
             const p = puzzles[pid];
             const t = p.track || 'systems';
-            return t === activeTrack;
+            if (t !== activeTrack) return false;
+            // Difficulty filter — `medium` is the default for any puzzle
+            // missing an explicit difficulty.
+            const d = p.difficulty || 'medium';
+            return difficultyFilter[d];
           })
+          .slice() // don't mutate puzzleOrder
+          .sort((a, b) => compareForSort(a, b, sortBy))
           .map((pid) => {
           const p = puzzles[pid];
           const active = p.id === puzzle.id;
           const completed = completedPuzzleIds.includes(pid);
+          const difficulty = p.difficulty || 'medium';
           return (
             <button
               key={pid}
@@ -207,6 +352,11 @@ export default function Palette({
               onClick={() => onSwitchPuzzle(pid)}
             >
               <span className="lesson-num">{p.order}</span>
+              <span
+                className={`difficulty-dot difficulty-dot-${difficulty}`}
+                title={`Difficulty: ${difficulty}`}
+                aria-label={`Difficulty ${difficulty}`}
+              />
               <span className="lesson-title">{p.title}</span>
               {completed && (
                 <span className="lesson-check-wrap">

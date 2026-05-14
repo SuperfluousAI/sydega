@@ -59,6 +59,9 @@ describe('puzzle contracts', () => {
       expect(Array.isArray(p.requirements)).toBe(true);
       expect(p.requirements.length).toBeGreaterThan(0);
     }
+    // Difficulty must be one of the three known levels — the Palette
+    // sort+filter trusts this without re-validating per render.
+    expect(['easy', 'medium', 'hard']).toContain(p.difficulty);
   });
 
   it.each(puzzleOrder)('puzzle %s allowedComponents references real types', (id) => {

@@ -7,6 +7,15 @@
 
 export const changelog = [
   {
+    version: '2026-05-14e',
+    date: '2026-05-14',
+    entries: [
+      'Difficulty tags on every lesson — easy / medium / hard. Each row carries a small colored dot next to the lesson number.',
+      'Sort & filter — new button under the track toggle in the lessons list. Sort by number or by difficulty; filter to show only the difficulties you want.',
+      'Lesson 1 layout: Program is now visually centered below the Computer rather than tucked into the upper-left corner.',
+    ],
+  },
+  {
     version: '2026-05-14d',
     date: '2026-05-14',
     entries: [
