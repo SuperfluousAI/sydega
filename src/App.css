@@ -1910,8 +1910,14 @@
   outline: 2px dashed #22d3ee;
   outline-offset: 2px;
   animation: drop-target-pulse 1.1s ease-in-out infinite;
-  transition: transform 0.15s ease-out;
-  transform: scale(1.015);
+  /* No transform: the outline + pulse signal targeting clearly enough.
+     Previously this rule applied scale(1.015) — a 1.5% expansion — which
+     made the Computer's frame appear to grow/move outward in all
+     directions as the cursor entered/left it. On a 340×220 container that
+     was ~5px of visual growth on each edge, perceived as the parent
+     "moving" during drag. The scale was the user's "feels disorienting"
+     complaint on Lesson 1. (Reported 2026-05-14; documented test:
+     "parent Computer stays put when children are dragged" in App.test.jsx.) */
 }
 
 /* Edge flash — when a hint wires a new edge, the path itself flashes gold. */

@@ -71,7 +71,25 @@ vi.mock('reactflow', async () => {
     Position: { Top: 'top', Right: 'right', Bottom: 'bottom', Left: 'left' },
     addEdge: (params, eds) => [...eds, params],
     applyEdgeChanges: (_changes, eds) => eds,
-    applyNodeChanges: (_changes, nds) => nds,
+    // Mirror reactflow's real behavior for position changes so tests can
+    // catch mutation bugs where the wrong node moves during drag.
+    // Position changes from reactflow carry `{ type: 'position', id, position }`;
+    // we apply them to the matching node. Other change types pass through
+    // unchanged. Returning the same array reference when no change matched
+    // avoids spurious re-renders.
+    applyNodeChanges: (changes, nds) => {
+      if (!Array.isArray(changes) || changes.length === 0) return nds;
+      let next = nds;
+      let mutated = false;
+      for (const c of changes) {
+        if (c && c.type === 'position' && c.position) {
+          if (!mutated) { next = next.slice(); mutated = true; }
+          const idx = next.findIndex((n) => n.id === c.id);
+          if (idx >= 0) next[idx] = { ...next[idx], position: c.position };
+        }
+      }
+      return next;
+    },
     useNodesState: (initial) => {
       // dummy — App passes nodes via props anyway
       return [initial, () => {}, () => {}];
@@ -263,6 +281,144 @@ describe('App visual contract — drop-target highlight', () => {
       rfHandlers.onNodeDrag({ clientX: 0, clientY: 0 }, inParent);
     });
     expect(container.querySelector('.drop-target')).toBeNull();
+  });
+});
+
+describe('App visual contract — parent Computer stays put when children are dragged', () => {
+  // The user reported: "lesson 1 - dragging components still move the parent.
+  // it's weird. you should have tests to catch this."
+  // These tests cover the exact L1 scenarios: dragging a top-level Program
+  // into the Computer; dragging a CPU around inside the Computer; dragging
+  // the Computer's child out of it. In NONE of these should the Computer's
+  // position (data-x / data-y) change.
+
+  function getComputerXY(container) {
+    const c = container.querySelector('[data-id="computer-1"]');
+    return { x: c.getAttribute('data-x'), y: c.getAttribute('data-y') };
+  }
+
+  it('dragStop reparents a Program into the Computer WITHOUT moving the Computer', () => {
+    const { container } = render(<App />);
+    const before = getComputerXY(container);
+    expect(before).toEqual({ x: '280', y: '140' }); // L1 initial computer position
+
+    // Drag the Program (top-level, at 80,200) so its center lands inside
+    // the Computer (world bounds 280..620 x 140..360). Program default
+    // size 170x90; center at position + (85, 45). To land center at
+    // (450, 250), set position to (365, 205).
+    const programDraggedTo = {
+      id: 'program-1',
+      position: { x: 365, y: 205 },
+      data: { type: 'program', config: {} },
+      // parentNode is undefined — Program starts top-level.
+    };
+    act(() => {
+      rfHandlers.onNodeDragStop({ clientX: 450, clientY: 250 }, programDraggedTo);
+    });
+
+    // Program should now be parented to computer-1.
+    const programAfter = container.querySelector('[data-id="program-1"]');
+    expect(programAfter.getAttribute('data-parent')).toBe('computer-1');
+    // Computer's position MUST NOT have changed.
+    expect(getComputerXY(container)).toEqual(before);
+  });
+
+  it('dragStop moving a CPU around INSIDE the Computer does not move the Computer', () => {
+    const { container } = render(<App />);
+    const before = getComputerXY(container);
+
+    // Synthetic CPU already parented to computer-1, dragged to a new
+    // local position. CPU default size 170x90. Local pos (10, 10) →
+    // center at (95, 55), which in world coords is (375, 195) — inside.
+    const cpuDragged = {
+      id: 'cpu-inside-1',
+      position: { x: 30, y: 30 },
+      data: { type: 'cpu', config: { cores: 4 } },
+      parentNode: 'computer-1',
+    };
+    act(() => {
+      rfHandlers.onNodeDragStop({ clientX: 375, clientY: 195 }, cpuDragged);
+    });
+
+    expect(getComputerXY(container)).toEqual(before);
+  });
+
+  it('dragStop moving a CPU OUT of the Computer (to top-level) does not move the Computer', () => {
+    const { container } = render(<App />);
+    const before = getComputerXY(container);
+
+    // CPU dragged far past the Computer's right edge. Local pos doesn't
+    // matter much since clientX/Y drives the trash check; what matters is
+    // node.position which is the post-drag local position. We want this
+    // resolve to "no container at world center" → null parent.
+    const cpuLeaving = {
+      id: 'cpu-leaving-1',
+      // local x 500 inside parent → world (280+500+85, 140+50+45) ≈ (865, 235)
+      // well past Computer's right edge (620).
+      position: { x: 500, y: 50 },
+      data: { type: 'cpu', config: { cores: 4 } },
+      parentNode: 'computer-1',
+    };
+    act(() => {
+      rfHandlers.onNodeDragStop({ clientX: 865, clientY: 235 }, cpuLeaving);
+    });
+
+    expect(getComputerXY(container)).toEqual(before);
+  });
+
+  // During drag (mid-gesture, before release), React Flow streams position
+  // updates via onNodesChange / applyNodeChanges. None of those should
+  // reach the Computer's row in the nodes state.
+  it('mid-drag position updates on a child never mutate the Computer\'s position', () => {
+    const { container } = render(<App />);
+    const before = getComputerXY(container);
+
+    // Fire several onNodeDrag callbacks at different positions — simulates
+    // the user sweeping a Program across the canvas. Computer must stay
+    // anchored throughout.
+    const positions = [
+      { clientX: 200, clientY: 250 },
+      { clientX: 350, clientY: 250 },
+      { clientX: 450, clientY: 250 }, // over Computer
+      { clientX: 550, clientY: 250 }, // still over Computer
+      { clientX: 700, clientY: 250 }, // past Computer
+    ];
+    for (const p of positions) {
+      act(() => {
+        rfHandlers.onNodeDrag(
+          p,
+          {
+            id: 'program-1',
+            position: { x: p.clientX - 85, y: p.clientY - 45 },
+            data: { type: 'program', config: {} },
+          },
+        );
+      });
+      expect(getComputerXY(container)).toEqual(before);
+    }
+  });
+
+  // Two top-level siblings (Computer + Program) before the Program gets
+  // parented. The Program's dragStop reparents it into the Computer; the
+  // sibling-scoot pass that follows must NOT scoot the (now-parent) Computer
+  // because the two are no longer siblings at that point.
+  it('sibling-scoot after parenting does not push the Computer', () => {
+    const { container } = render(<App />);
+    const before = getComputerXY(container);
+    // Drop the Program near Computer's left edge so its center lands inside.
+    const program = {
+      id: 'program-1',
+      // Center will be (240+85, 200+45) = (325, 245) — inside Computer.
+      position: { x: 240, y: 200 },
+      data: { type: 'program', config: {} },
+    };
+    act(() => {
+      rfHandlers.onNodeDragStop({ clientX: 325, clientY: 245 }, program);
+    });
+    // Program now parented to computer-1; Computer unmoved.
+    const programAfter = container.querySelector('[data-id="program-1"]');
+    expect(programAfter.getAttribute('data-parent')).toBe('computer-1');
+    expect(getComputerXY(container)).toEqual(before);
   });
 });
 

@@ -7,6 +7,13 @@
 
 export const changelog = [
   {
+    version: '2026-05-14d',
+    date: '2026-05-14',
+    entries: [
+      'Lesson 1 disorientation fix — the Computer frame no longer scales up when you drag a component onto it. The outline + pulse still highlight the drop target; the perceived "parent is moving" was a 1.5% scale transform on hover that has been removed.',
+    ],
+  },
+  {
     version: '2026-05-14c',
     date: '2026-05-14',
     entries: [
