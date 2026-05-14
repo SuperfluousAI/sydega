@@ -2445,3 +2445,173 @@ All passing. Builds clean (497kB JS / 31kB CSS — slight uptick from new primit
 - **Per-lane sim metrics** — the current `successRate` aggregates across all clients. The flash-sale puzzle works around this with a relaxed threshold + presence-based requirements. A future sim extension could tag traffic by client and report per-client success rates, which would let us write tighter requirements like "normal checkout success ≥ 99% even during flash-sale spike."
 - **Idempotency-keys / compensating transactions on canvas** — both are central to real e-commerce sagas but live as request-level concerns, not flow-level. Currently in lesson copy + simplifications.md. Would require extending the sim to model failures / retries to bring on-canvas.
 
+---
+
+## Session 1 Part 23 — 2026-05-13: Rename to sydega + ship to the superfluous-ai platform (live at sydega.superfluous.ai). First CrashLoopBackOff caught + fixed mid-deploy.
+
+### What this Part is
+
+Move the project from a local-only repo to a deployed app on the SuperfluousAI ecosystem. Goal: live on `*.superfluous.ai` via the v3 helm chart, with GHA-driven CI for builds and chart bumps, mirroring the patterns of `superfluous-corey` and `superfluous-vibes`.
+
+End state: **https://sydega.superfluous.ai is live** — Vite SPA built by GHA, image in ECR, deployed via ArgoCD, KEDA scale-to-zero, ~3s cold start, ~400ms warm.
+
+### Naming
+
+Operator picked **sydega** — SYstems DEsign GAme. Replaces the placeholder `systems-design-game` package name. Short, memorable, unambiguous in the org's namespace.
+
+Touched today:
+- `package.json` `name` → `sydega`
+- `index.html` title → `sydega — systems design game`
+- New repo: `SuperfluousAI/sydega`
+- New chart at `superfluous-ai/apps/sydega/chart/`
+- Subdomain: `sydega.superfluous.ai`
+
+NOT renamed (preserved for now): local dir is still `~/claude/systems-design-game/`. Operator can rename later if desired; nothing externally references the local path.
+
+### Repo placement decision
+
+The org has 3 repos + dedicated repos for substantial standalone projects (`superfluous-bot`, `hermes-console`). Sydega's profile:
+- Substantial (19 lessons, 431 tests, sim engine)
+- Not personal (unlike `coreytheengineer-blog`)
+- Not agent-managed (unlike `superfluous-vibes` content)
+- Could be open-sourced later
+
+Decision: **dedicated repo `SuperfluousAI/sydega`**. Source there, chart at `superfluous-ai/apps/sydega/chart/` per the platform rule ("charts always live in superfluous-ai regardless of source location").
+
+### Deploy infra added to the sydega repo
+
+1. **`Dockerfile`** — multi-stage. Stage 1 = Node 22 alpine builds Vite (`npm ci` + `npm run build`). Stage 2 = nginx serves `dist/` on :8080. Image ends up ~25MB with no Node runtime baked in.
+
+2. **`nginx.conf`** — SPA fallback (`try_files $uri $uri/ /index.html`), gzip for text/css/js/json/svg, `/assets/` long-cache, `/healthz` endpoint that returns 200 from nginx itself without rendering index.html (for the kubelet readiness probe).
+
+3. **`.dockerignore`** — excludes `node_modules`, `dist`, journals, `puzzle-research/`, `deploy/`. Keeps the build context small.
+
+4. **`.github/workflows/lint.yml`** — parses every workflow YAML so a syntactically-bad workflow can't silently get ignored by GHA. Mirrors corey + vibes.
+
+5. **`.github/workflows/build-push.yml`** — on push to main (paths-filtered to source-affecting files only) OR workflow_dispatch:
+   - hadolint Dockerfile (fail fast before wasting an ECR immutable tag)
+   - Compute timestamped tag: `sydega-YYYYMMDD-HHMM`
+   - AWS creds (long-lived IAM keys for now)
+   - `docker buildx build --platform linux/amd64 --push` (cluster is amd64-only per corey readme; vibes confirms)
+   - Checkout `superfluous-ai` with `SUPERFLUOUS_AI_PAT` (fine-grained Contents: R+W)
+   - `sed -i` bump `apps/sydega/chart/values.yaml` `image.tag`
+   - Commit + direct push to `superfluous-ai/main` (same flow as corey + vibes)
+
+6. **`deploy/chart/`** — staged Chart.yaml + values.yaml + values.secrets.yaml. Chart depends on `file://../../../infra/helm/app-v3` aliased as `app`. Values: name `sydega`, port 8080, scale-to-zero ON, quota tightened (500m/256Mi/5 pods), gateway `superfluous-gateway` in `apps` namespace, no secrets, `/healthz` probes.
+
+7. **`deploy/README.md`** — full 5-step deploy runbook (gh repo create → buildx push → copy chart → commit + push superfluous-ai → verify).
+
+### CI/CD — secrets bootstrap
+
+Three GHA secrets needed (same shape as corey + vibes):
+- `ECR_AWS_ACCESS_KEY_ID` + `ECR_AWS_SECRET_ACCESS_KEY` — IAM user with ECR push to `superfluous-apps`
+- `SUPERFLUOUS_AI_PAT` — fine-grained PAT for cross-repo push to bump the chart in superfluous-ai
+
+**Decision (with operator):** reuse the `vibes-ci-ecr` IAM keys for sydega instead of provisioning a new `sydega-ci-ecr` IAM user via Terraform. Fastest path; trade-off is shared blast radius (a sydega CI compromise also exposes vibes' ECR push permissions). Listed as a follow-up in the caveats section below.
+
+Set via `gh secret set` over stdin (no shell history leak):
+
+```bash
+AWS_KEY=$(grep '^AWS_ACCESS_KEY_ID=' ~/.superfluous/aws/iam/vibes-ci-ecr | cut -d= -f2-)
+AWS_SECRET=$(grep '^AWS_SECRET_ACCESS_KEY=' ~/.superfluous/aws/iam/vibes-ci-ecr | cut -d= -f2-)
+PAT=$(cat ~/.superfluous/github-superfluous-ai-pat | tr -d '[:space:]')
+printf '%s' "$AWS_KEY"    | gh secret set ECR_AWS_ACCESS_KEY_ID     -R SuperfluousAI/sydega
+printf '%s' "$AWS_SECRET" | gh secret set ECR_AWS_SECRET_ACCESS_KEY -R SuperfluousAI/sydega
+printf '%s' "$PAT"        | gh secret set SUPERFLUOUS_AI_PAT        -R SuperfluousAI/sydega
+```
+
+### The deploy sequence — what actually happened
+
+Step-by-step receipts.
+
+**1. Create repo + push.** `master` branch → renamed to `main` (org convention) → committed pt22 work (35 files: rename + Dockerfile + nginx.conf + deploy/ + .github/ + L19/L19.1/L19.2 + interaction polish + journal Part 22) → `gh repo create SuperfluousAI/sydega --public --source . --remote origin --push`. Repo live at https://github.com/SuperfluousAI/sydega.
+
+**2. First GHA run on the initial push.** Both `lint.yml` and `build-push.yml` triggered automatically. `lint.yml` passed. `build-push.yml` failed at "Configure AWS credentials" step (expected — secrets not set yet).
+
+**3. Set GHA secrets.** Reused vibes-ci-ecr (decision above), set 3 secrets via `gh secret set` over stdin.
+
+**4. Re-trigger build-push via `gh workflow run`.** Run 25843251547. Succeeded end-to-end: hadolint → buildx → ECR push (tag `sydega-20260514-0519`) → checkout superfluous-ai → bump step ran → printed expected warning "superfluous-ai/apps/sydega/chart/values.yaml does not exist yet. First-time onboarding..." → skipped commit. This is the documented bootstrap path (vibes readme: "The workflow logs a warning in this case. The human still creates the initial chart directory in superfluous-ai on first onboarding").
+
+**5. Land chart in superfluous-ai.** Copied `deploy/chart/Chart.yaml`, `values.yaml`, `values.secrets.yaml` to `~/claude/superfluous-ai/apps/sydega/chart/`. `sed -i ''` replaced the placeholder tag (`sydega-0.1.0-placeholder`) with the real one (`sydega-20260514-0519`). `helm dependency update` resolved app-v3 from `file://../../../infra/helm/app-v3`. `helm template` rendered cleanly: NetworkPolicy, ResourceQuota, Service, Deployment (with the right image), HTTPRoute (`hostnames: ["sydega.superfluous.ai"]`), HTTPScaledObject (KEDA).
+
+Committed only `apps/sydega/` (other unrelated working-tree changes in superfluous-ai weren't touched). Pushed to `superfluous-ai/main`. The superfluous-ai `chart-validate` workflow ran on the push and passed.
+
+**6. ArgoCD discovery + first sync.** ApplicationSet `apps` uses a git directory generator on `apps/*/chart`. Force-reconciled via `kubectl annotate applicationset apps -n argocd argocd.argoproj.io/refresh=normal --overwrite` → `Application sydega` appeared as `OutOfSync / Missing` → `kubectl patch ... operation: sync: {}` → moved to `Synced / Healthy` within ~30s. Service + ScaledObject + HPA materialized. Deployment at 0/0 replicas (correct — KEDA scale-to-zero waits for the first HTTP request).
+
+### The CrashLoopBackOff (caught + fixed)
+
+Verification via curl:
+- `GET /healthz` → 200 ✓
+- `GET /` → 502 (60s timeout)
+
+Mismatch: `/healthz` works, `/` doesn't, same pod, same nginx. Diagnostic:
+
+```
+kubectl get pods -n app-sydega
+→ sydega-6569b5cfbc-6ttvw   0/1   CrashLoopBackOff   4 restarts
+
+kubectl logs -n app-sydega deployment/sydega
+→ nginx: [emerg] mkdir() "/var/cache/nginx/client_temp" failed (13: Permission denied)
+```
+
+**Root cause:** the `nginx:1.27-alpine` base image's cache directories under `/var/cache/nginx/` are owned by `root` and need write permission. The platform's helm chart applies Pod Security Standards `baseline` enforcement + drops ALL capabilities + disallows privilege escalation. With the `USER nginx` directive in the Dockerfile but no chown, the nginx process can't create its working directories on startup.
+
+**Why `/healthz` returned 200 anyway:** `kubectl get httproute -n app-sydega` showed no HTTPRoute in the app namespace — KEDA scale-to-zero routes traffic through `keda-system/cold-start-proxy` instead. The proxy was answering `/healthz` with a generic 200 while waking the pod (which then immediately crashed before serving `/`). Misleading signal that briefly suggested the pod was up.
+
+**Fix:** swap base image to `nginxinc/nginx-unprivileged:1.27-alpine`. Purpose-built for non-root, restricted-PSS clusters:
+- Cache dirs pre-chowned to UID 101 (the nginx user)
+- Default listen port already 8080
+- No `user` directive in `/etc/nginx/nginx.conf`
+- `nginx-test` in `superfluous-vibes/deployments/` uses the same image — confirmed working pattern on this platform
+
+Dockerfile updated. Pushed to sydega/main. Build-push workflow (25843519490) auto-fired (Dockerfile is in the paths filter) → tagged `sydega-20260514-0527` → pushed to ECR → ran the sed-bump step → this time the chart EXISTED so the sed succeeded → committed `apps/sydega: bump image to sydega-20260514-0527` to superfluous-ai/main directly.
+
+ArgoCD reconciled. Pod started clean. End-to-end:
+- `GET /` → 200 in 0.398s (warm)
+- `GET /healthz` → 200 in 0.147s
+- `<title>sydega — systems design game</title>` confirmed in response body
+
+### Final state (verified)
+
+| Layer | Detail |
+|---|---|
+| GitHub repo | https://github.com/SuperfluousAI/sydega — `main` @ `78fd338` |
+| GHA workflows | `lint.yml` (passing) + `build-push.yml` (passing); 3 secrets set |
+| ECR image | `596633517329.dkr.ecr.us-east-1.amazonaws.com/superfluous-apps:sydega-20260514-0527` (nginx-unprivileged base, ~25MB, amd64) |
+| Platform chart | `superfluous-ai/apps/sydega/chart/` — `main` @ `68fcc40`; wraps `infra/helm/app-v3` |
+| ArgoCD app | `sydega` — `Synced / Healthy` |
+| K8s namespace | `app-sydega` |
+| Live URL | https://sydega.superfluous.ai (HTTP 200, ~400ms warm, ~3s KEDA cold start) |
+
+### Caveats logged for follow-up
+
+These were called out at deploy time. Capturing here so future-us can act on them in the right session.
+
+1. **Reusing `vibes-ci-ecr` IAM keys** instead of provisioning dedicated `sydega-ci-ecr`. Blast radius today: if sydega's CI is compromised, vibes' ECR push permissions are also exposed. Fix: add `sydega` to `sibling_repo_ci_users` in `superfluous-ai/infra/terraform/modules/ecr/`, `terraform apply`, fetch new keys from `~/.superfluous/aws/iam/sydega-ci-ecr` (which Terraform should produce), rotate via `gh secret set`. Quick when scheduled; not urgent because the IAM user only has ECR push permissions on `superfluous-apps`.
+
+2. **Node 20 GHA actions deprecation warning.** Several actions (`actions/checkout@v4`, `aws-actions/configure-aws-credentials@v4`, `docker/build-push-action@v6`, `docker/setup-buildx-action@v3`) run on Node 20. GitHub forces Node 24 starting June 2, 2026, and removes Node 20 from runners September 16, 2026. No action needed yet; revisit before June 2026. Workaround if needed: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` env var on the runner.
+
+3. **Local directory not renamed.** `~/claude/systems-design-game/` is still the path even though the project is now `sydega`. Operator's call when to mv; nothing references the local path externally.
+
+4. **Other unrelated working-tree changes in superfluous-ai** (untracked files in `infra/docs/`, `research/loopdeloop/`, etc.) were present during the deploy. Did not include in the chart-bump commit — only `apps/sydega/` got staged. Those are operator's work in progress.
+
+5. **No subsequent-deploys runbook drift check.** The auto-bump in `build-push.yml` uses `sed` patterns that match `sydega-YYYYMMDD-HHMM.*` and the placeholder. If anyone manually edits the tag in `apps/sydega/chart/values.yaml` to a non-pattern string, the auto-bump would silently no-op (the workflow logs a warning but exits success). Risk is low because the only writers are this workflow + first-time bootstrap; called out for awareness.
+
+### What this Part didn't address
+
+- **Dedicated sydega-ci-ecr IAM user** — see caveat #1.
+- **OIDC-based AWS auth** — modern best practice but the existing corey + vibes pattern is long-lived keys; would be a platform-wide migration, not a per-app change.
+- **Source-repo path rename** (`systems-design-game` → `sydega` locally) — cosmetic, deferred.
+- **PR gate on chart bumps** — both corey and vibes direct-push to `superfluous-ai/main` from CI. The vibes readme covers the criteria for when to add a PR gate ("multiple humans committing, agent landing content without a human in the commit loop, regression cost exceeds review click cost, or an auditor asks"). None of those apply yet for sydega.
+- **The journal entry itself shipping in the image.** `journal.md` is excluded from the Docker image via `.dockerignore` but lives in the repo. By design — repo content + image content are distinct concerns.
+
+### Patterns worth keeping (from this Part specifically)
+
+1. **The "pre-populate the parent chart's solution"** idea (added in pt22 for L19.1 / L19.2) translates directly to the deploy world: the runbook in `deploy/README.md` walks an operator through the deploy AS IF the platform chart didn't exist yet. Useful template for future sibling-repo onboarding too.
+
+2. **Bootstrap-then-fix sequence.** First image had a bug (CrashLoopBackOff due to non-root cache dir). Caught at the verification step within minutes of ArgoCD reporting `Synced / Healthy`. Cycle time: edit Dockerfile → commit → CI builds + bumps chart → ArgoCD reconciles → curl → green. Total ~3 minutes. Validates that the deploy loop works for fixes, not just initial ship.
+
+3. **Treat `Synced / Healthy` as necessary-not-sufficient.** ArgoCD reports green when the Kubernetes resources are present and reconcile-clean. Pod-level health (CrashLoopBackOff) doesn't always surface there immediately. Verify with an actual HTTP request, not just `kubectl get app`.
+
+4. **Misleading `/healthz` 200.** When the cold-start proxy is in the path, a 200 on `/healthz` can come from the proxy, NOT the app. Hit `/` (or a known-distinctive path) for ground truth on whether the actual pod is responding.
+
