@@ -367,7 +367,18 @@ function CanvasInner({
       // A container CAN be dropped into another container (e.g. Computer into Router).
       // We just need to skip self when looking up the target (the node doesn't exist yet
       // for new drops anyway, but findContainerAt also serves the reparent path).
-      const container = findContainerAt(nodes, position);
+      //
+      // Use the dropped component's CENTER (cursor + nodeStyle/2) instead of the
+      // raw cursor when deciding which container it lands in. With cursor-only,
+      // dropping near the edge of a container could land the cursor just outside
+      // the container's bounds — even though visually the component would land
+      // inside. That mismatch pushed the would-be parent away via the top-level
+      // sibling-scoot, making it appear to "sink lower" on each near-miss drop.
+      // handleNodeDragStop already uses center; this brings handleDrop in line.
+      const dropW = meta?.nodeStyle?.width || 170;
+      const dropH = meta?.nodeStyle?.height || 90;
+      const center = { x: position.x + dropW / 2, y: position.y + dropH / 2 };
+      const container = findContainerAt(nodes, center);
 
       const containerWorld = container ? worldPosition(container, nodes) : null;
       // Compute local position inside the container, then clamp to keep the

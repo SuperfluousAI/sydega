@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   componentTypes,
   paletteMetaFor,
   parsePaletteEntry,
 } from '../lib/componentTypes.js';
 import { puzzles, puzzleOrder } from '../lib/puzzles.js';
+import { useScrollHints } from './useScrollHints.js';
 
 // Stable identity for an allowedComponents entry. Role-aware types use
 // `type:role`; plain types use the bare typeKey. Powers the "is this entry
@@ -71,10 +72,13 @@ export default function Palette({
   puzzle,
   onSwitchPuzzle,
   completedPuzzleIds = [],
+  onClearCompletion,
   collapsed = false,
   onToggleCollapse,
   autoStack = true,
   onToggleAutoStack,
+  activeTrack = 'systems',
+  onSwitchTrack,
 }) {
   // Per-type drag-time flags. Today only "prepopulate" exists, for Computer.
   // If a future component needs its own flag, generalize this.
@@ -82,6 +86,16 @@ export default function Palette({
   // More-components panel is collapsed by default — it's an escape hatch
   // from the lesson's curated component list, not the primary surface.
   const [moreOpen, setMoreOpen] = useState(false);
+
+  // Lessons list scroll-hint. As the curriculum grew past 19 lessons the
+  // list pushed the Components section off-screen; now the list is height-
+  // constrained + scrollable, with the same ▲/▼ overlays PuzzleBar uses
+  // for its results column.
+  const lessonsRef = useRef(null);
+  const {
+    showUp: showLessonsUpHint,
+    showDown: showLessonsDownHint,
+  } = useScrollHints(lessonsRef, [puzzle.id, puzzleOrder.length]);
 
   // allowedComponents entries are either a string (typeKey only) or an object
   // `{ type, role }` for role-aware types like service. Drag payload carries
@@ -143,8 +157,46 @@ export default function Palette({
           </button>
         )}
       </div>
-      <div className="lessons-list">
-        {puzzleOrder.map((pid) => {
+      {onSwitchTrack && (
+        <div className="track-toggle" role="tablist" aria-label="Lesson track">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTrack === 'systems'}
+            className={`track-pill ${activeTrack === 'systems' ? 'active' : ''}`}
+            onClick={() => onSwitchTrack('systems')}
+          >
+            Systems
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTrack === 'javascript'}
+            className={`track-pill ${activeTrack === 'javascript' ? 'active' : ''}`}
+            onClick={() => onSwitchTrack('javascript')}
+          >
+            JavaScript
+          </button>
+        </div>
+      )}
+      <div className="lessons-list-wrap">
+        {showLessonsUpHint && (
+          <div className="puzzle-reading-scroll-hint puzzle-reading-scroll-hint--up" aria-hidden="true">
+            <span className="scroll-hint-arrow">▲</span>
+            <span className="scroll-hint-arrow">▲</span>
+          </div>
+        )}
+        <div ref={lessonsRef} className="lessons-list">
+        {puzzleOrder
+          .filter((pid) => {
+            // 'systems' is the default — any lesson without an explicit
+            // `track` field counts as systems. Only puzzles explicitly
+            // tagged `track: 'javascript'` show up in the JS pill.
+            const p = puzzles[pid];
+            const t = p.track || 'systems';
+            return t === activeTrack;
+          })
+          .map((pid) => {
           const p = puzzles[pid];
           const active = p.id === puzzle.id;
           const completed = completedPuzzleIds.includes(pid);
@@ -154,11 +206,45 @@ export default function Palette({
               className={`lesson-item ${active ? 'active' : ''} ${completed ? 'completed' : ''}`}
               onClick={() => onSwitchPuzzle(pid)}
             >
-              <span className="lesson-num">{completed ? '✓' : p.order}</span>
+              <span className="lesson-num">{p.order}</span>
               <span className="lesson-title">{p.title}</span>
+              {completed && (
+                <span className="lesson-check-wrap">
+                  <span className="lesson-check" aria-label="completed">✓</span>
+                  {onClearCompletion && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="lesson-check-clear"
+                      aria-label={`Clear completion for ${p.title}`}
+                      title="Clear completion for this lesson"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClearCompletion(pid);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onClearCompletion(pid);
+                        }
+                      }}
+                    >
+                      ✕
+                    </span>
+                  )}
+                </span>
+              )}
             </button>
           );
         })}
+        </div>
+        {showLessonsDownHint && (
+          <div className="puzzle-reading-scroll-hint" aria-hidden="true">
+            <span className="scroll-hint-arrow">▼</span>
+            <span className="scroll-hint-arrow">▼</span>
+          </div>
+        )}
       </div>
 
       <h2 className="panel-title" style={{ marginTop: 20 }}>Components</h2>

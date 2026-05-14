@@ -198,6 +198,76 @@ export const componentTypes = {
       { key: 'readRatio', label: 'Read ratio', type: 'number', min: 0, max: 1, step: 0.05 },
     ],
   },
+  // Custom Program — flow node whose passthrough behavior is defined by a
+  // user-supplied JS function. The function signature is documented in
+  // customProgramExec.js and the default code below; the flow simulator
+  // calls it with the incoming {readIn, writeIn, latencyIn, p99LatencyIn}
+  // and uses the returned shape to drive downstream flow + latency.
+  //
+  // Safety: executed via new Function() in the page scope. Acceptable for a
+  // single-user educational tool with no canvas sharing. If we ever add
+  // shared / persisted canvases, move execution into a Worker sandbox.
+  customProgram: {
+    label: 'Custom Program',
+    color: '#f472b6',
+    role: 'passthrough',
+    hasInput: true,
+    hasOutput: true,
+    defaults: {
+      displayLabel: 'Custom',
+      code: [
+        '// (input) => output — runs as a flow node every Run.',
+        '// input  = { readIn, writeIn, totalIn, latencyIn, p99LatencyIn }',
+        '// return = { readOut, writeOut, latencyAdd, p99LatencyAdd }',
+        '//',
+        '// This default is identity — passes traffic through unchanged.',
+        '// Try: cut readOut in half to model a 50% throttle.',
+        'function transform(input) {',
+        '  return {',
+        '    readOut: input.readIn,',
+        '    writeOut: input.writeIn,',
+        '    latencyAdd: 2,',
+        '    p99LatencyAdd: 5,',
+        '  };',
+        '}',
+      ].join('\n'),
+    },
+    props: [
+      { key: 'displayLabel', label: 'Display label', type: 'text' },
+      // The `code` prop renders specially in PropertyPanel — see the
+      // CustomProgramEditor branch there.
+      { key: 'code', label: 'JavaScript', type: 'code' },
+    ],
+  },
+  // ─── JS Sandbox track (dataflow) ──────────────────────────────────────
+  // Three components: textInput, textOutput, and customProgram (defined
+  // above; it dual-purposes as the dataflow body). Wires carry strings.
+  // The dataflow simulator (simulateDataflow in simulator.js) walks the
+  // graph once when Run fires and pipes strings through.
+  textInput: {
+    label: 'Text Input',
+    color: '#06b6d4',
+    role: 'source',
+    hasInput: false,
+    hasOutput: true,
+    // `value` is editable in the node body itself. The PropertyPanel also
+    // exposes it as a fallback (e.g., when the player wants to paste a
+    // long string).
+    defaults: { value: '' },
+    props: [
+      { key: 'value', label: 'Value', type: 'text' },
+    ],
+  },
+  textOutput: {
+    label: 'Text Output',
+    color: '#34d399',
+    role: 'sink',
+    hasInput: true,
+    hasOutput: false,
+    defaults: {},
+    props: [],
+  },
+
   loadBalancer: {
     label: 'Load Balancer',
     color: '#0ea5e9',

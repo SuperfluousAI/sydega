@@ -43,14 +43,22 @@ describe('puzzle contracts', () => {
 
   it.each(puzzleOrder)('puzzle %s has all required fields', (id) => {
     const p = puzzles[id];
-    expect(p.kind).toMatch(/^(composition|connectivity|flow)$/);
+    expect(p.kind).toMatch(/^(composition|connectivity|flow|dataflow)$/);
     expect(typeof p.title).toBe('string');
     expect(typeof p.blurb).toBe('string');
-    expect(typeof p.order).toBe('number');
+    // Systems puzzles use numeric order; JS Sandbox lessons use 'J1', 'J2',
+    // etc. Both are fine — `order` is for display only.
+    expect(['number', 'string']).toContain(typeof p.order);
     expect(Array.isArray(p.allowedComponents)).toBe(true);
     expect(typeof p.initialNodes).toBe('function');
-    expect(Array.isArray(p.requirements)).toBe(true);
-    expect(p.requirements.length).toBeGreaterThan(0);
+    if (p.kind === 'dataflow') {
+      // Dataflow puzzles grade via test cases, not requirements.
+      expect(Array.isArray(p.testCases)).toBe(true);
+      expect(p.testCases.length).toBeGreaterThan(0);
+    } else {
+      expect(Array.isArray(p.requirements)).toBe(true);
+      expect(p.requirements.length).toBeGreaterThan(0);
+    }
   });
 
   it.each(puzzleOrder)('puzzle %s allowedComponents references real types', (id) => {

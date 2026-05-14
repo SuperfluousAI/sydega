@@ -1,3 +1,4 @@
+import CodeEditor from './CodeEditor.jsx';
 import { metaFor } from '../lib/componentTypes.js';
 
 export default function PropertyPanel({ node, onChange, onDelete, onToggleFailed }) {
@@ -31,7 +32,14 @@ export default function PropertyPanel({ node, onChange, onDelete, onToggleFailed
         {meta.props.map((p) => (
           <label key={p.key} className="property-field">
             <span>{p.label}</span>
-            {p.type === 'text' ? (
+            {p.type === 'code' ? (
+              <CodeEditor
+                value={cfg[p.key] ?? ''}
+                onChange={(next) => update(p.key, next)}
+                rows={14}
+                ariaLabel={p.label}
+              />
+            ) : p.type === 'text' ? (
               <input
                 type="text"
                 value={cfg[p.key] ?? ''}

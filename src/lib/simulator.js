@@ -8,6 +8,7 @@
 
 import { componentTypes, metaFor } from './componentTypes.js';
 import { assignLanIps } from './lanIp.js';
+import { runCustomProgram } from './customProgramExec.js';
 
 export function simulate(puzzle, nodes, edges) {
   // Clone nodes upfront so internal mutations (Lesson 14 leader promotion,
@@ -128,6 +129,8 @@ function dispatch(puzzle, nodes, edges) {
       return simulateComposition(nodes, edges);
     case 'connectivity':
       return simulateConnectivity(nodes, edges);
+    case 'dataflow':
+      return simulateDataflow(puzzle, nodes, edges);
     case 'flow':
     default:
       return simulateFlow(nodes, edges);
@@ -312,6 +315,60 @@ function simulateFlow(nodes, edges) {
       s.writeDropped += writeInFlow;
       warnings.push(`${meta.label} dropped ${Math.round(writeInFlow)} write req/s — wire writes to a Database instead.`);
       effWrites = 0;
+    }
+
+    // CUSTOM PROGRAM: user JS replaces the standard capacity cap + role
+    // dispatch. The function controls how much flow continues and how much
+    // latency it adds. Outputs are clamped to [0, input] so a buggy function
+    // can't manufacture traffic from nothing. Errors degrade to identity
+    // passthrough and surface as warnings so the user sees what's wrong.
+    if (node.data.type === 'customProgram') {
+      const { output, error } = runCustomProgram(cfg.code || '', {
+        readIn: effReads,
+        writeIn: effWrites,
+        totalIn: effReads + effWrites,
+        latencyIn: worstParentLatency,
+        p99LatencyIn: worstParentP99Latency,
+      });
+      const dl = cfg.displayLabel || meta.label;
+      if (error) warnings.push(`${dl}: ${error}`);
+      const readOut = Math.max(0, Math.min(effReads, output.readOut));
+      const writeOut = Math.max(0, Math.min(effWrites, output.writeOut));
+      s.readAccepted = readOut;
+      s.writeAccepted = writeOut;
+      s.readDropped += effReads - readOut;
+      s.writeDropped += effWrites - writeOut;
+      s.accepted = s.readAccepted + s.writeAccepted;
+      s.dropped = s.readDropped + s.writeDropped;
+      s.latencyToHere = worstParentLatency + Math.max(0, output.latencyAdd);
+      s.p99LatencyToHere = worstParentP99Latency + Math.max(0, output.p99LatencyAdd);
+      s.readContinuing = s.readAccepted;
+      s.writeContinuing = s.writeAccepted;
+      s.continuing = s.readContinuing + s.writeContinuing;
+      // Skip standard capacity / role logic — the user function owned it.
+      // Stranded-flow check still runs below, which is what we want: a
+      // customProgram with no out-edge should drop its output.
+      if (meta.role !== 'sink') {
+        const outRead = readOutBySource.get(id) || 0;
+        const outWrite = writeOutBySource.get(id) || 0;
+        if (s.readContinuing > 0.01 && outRead === 0) {
+          warnings.push(
+            `${dl} has ${Math.round(s.readContinuing)} read req/s with no read-carrying out-edge.`
+          );
+          s.readDropped += s.readContinuing;
+          s.readContinuing = 0;
+        }
+        if (s.writeContinuing > 0.01 && outWrite === 0) {
+          warnings.push(
+            `${dl} has ${Math.round(s.writeContinuing)} write req/s with no write-carrying out-edge.`
+          );
+          s.writeDropped += s.writeContinuing;
+          s.writeContinuing = 0;
+        }
+        s.dropped = s.readDropped + s.writeDropped;
+        s.continuing = s.readContinuing + s.writeContinuing;
+      }
+      continue;
     }
 
     // Apply capacity cap proportionally across (reads + writes).
@@ -803,4 +860,180 @@ function walkConnectivity(visitorId, target, nodeMap, outAdj) {
     };
   }
   return { reached: false, reason: `chain breaks: no DNS Record after Domain` };
+}
+
+// ─── Dataflow simulator (JS Sandbox track) ──────────────────────────────────
+// Strings flow down each wire. Topo sort the graph; walk each node once:
+//   - textInput  → emits its config.value
+//   - customProgram → calls transform(stringInput), uses the return
+//   - textOutput → captures the last string it received
+//
+// If the puzzle declares `testCases: [{input, expected}, ...]`, run the
+// whole graph once per test case with `input` injected at each textInput
+// (overriding their config.value) and grade the resulting textOutput
+// value against `expected`. Returns per-case pass/fail + an aggregate
+// `passedCount` for the requirements view.
+//
+// If no test cases, just run once with the textInputs' current values
+// (the "playground" mode, useful for free experimentation).
+function simulateDataflow(puzzle, nodes, edges) {
+  const { outAdj, inAdj } = buildAdjacency(nodes, edges);
+  const order = topoSort(nodes, outAdj, inAdj);
+  if (!order) {
+    return { ok: false, error: 'Graph has a cycle. Dataflow runs once top-to-bottom — remove circular wiring.' };
+  }
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // One-pass walk. `inputOverrides` lets the test-case runner inject a
+  // specific string at each textInput (override their config.value). Returns
+  // { perNode, warnings, outputValue, outputNodeId, programErrors }.
+  function runOnce(inputOverrides = null) {
+    const value = new Map(); // nodeId -> string emitted by that node
+    const warnings = [];
+    const programErrors = []; // { id, label, error }
+    let outputValue = null;
+    let outputNodeId = null;
+
+    for (const id of order) {
+      const node = nodeMap.get(id);
+      const cfg = node.data.config || {};
+      const type = node.data.type;
+      if (type === 'textInput') {
+        const v = inputOverrides != null
+          ? String(inputOverrides)
+          : (cfg.value != null ? String(cfg.value) : '');
+        value.set(id, v);
+        continue;
+      }
+      // Everything else pulls from upstream. If multiple upstreams exist
+      // we pick the FIRST one that produced a value — dataflow puzzles in
+      // v1 are single-input. Multi-input shapes need a merge node.
+      const parents = inAdj.get(id) || [];
+      let upstream = null;
+      for (const pid of parents) {
+        if (value.has(pid)) {
+          upstream = value.get(pid);
+          break;
+        }
+      }
+      if (type === 'customProgram') {
+        if (upstream == null) {
+          warnings.push(`${cfg.displayLabel || 'Custom Program'} has no input wired in — it can't run.`);
+          continue;
+        }
+        const result = runDataflowProgram(cfg.code || '', upstream);
+        if (result.error) {
+          programErrors.push({
+            id,
+            label: cfg.displayLabel || 'Custom Program',
+            error: result.error,
+          });
+          warnings.push(`${cfg.displayLabel || 'Custom Program'}: ${result.error}`);
+        }
+        value.set(id, result.value);
+        continue;
+      }
+      if (type === 'textOutput') {
+        if (upstream == null) {
+          warnings.push('Text Output has no input wired in — there\'s nothing to display.');
+          continue;
+        }
+        value.set(id, upstream);
+        // First textOutput in topo order is the "result" for grading. Later
+        // outputs are still recorded in perNode for display, just not graded.
+        if (outputValue == null) {
+          outputValue = upstream;
+          outputNodeId = id;
+        }
+        continue;
+      }
+      // Unknown type in a dataflow puzzle — pass-through if we can.
+      if (upstream != null) value.set(id, upstream);
+    }
+
+    const perNode = {};
+    for (const [id, v] of value) {
+      perNode[id] = { kind: 'dataflowValue', value: v };
+    }
+    return { perNode, warnings, outputValue, outputNodeId, programErrors };
+  }
+
+  // Test-case mode: run once per case, grade against `expected`.
+  const cases = Array.isArray(puzzle.testCases) ? puzzle.testCases : [];
+  if (cases.length > 0) {
+    const caseResults = cases.map((tc) => {
+      const r = runOnce(tc.input);
+      const passed = r.outputValue === tc.expected;
+      return {
+        input: tc.input,
+        expected: tc.expected,
+        actual: r.outputValue,
+        passed,
+        warnings: r.warnings,
+        programErrors: r.programErrors,
+      };
+    });
+    // Per-node display: re-run with the live (un-overridden) values so the
+    // canvas reflects what's currently in the textInputs. Lets the player
+    // play with inputs and see the canvas-side output update on Run.
+    const playground = runOnce(null);
+    return {
+      ok: true,
+      kind: 'dataflow',
+      caseResults,
+      passedCount: caseResults.filter((c) => c.passed).length,
+      totalCount: caseResults.length,
+      perNode: playground.perNode,
+      warnings: playground.warnings,
+      playgroundOutput: playground.outputValue,
+    };
+  }
+
+  // No test cases — just the playground run.
+  const playground = runOnce(null);
+  return {
+    ok: true,
+    kind: 'dataflow',
+    caseResults: [],
+    passedCount: 0,
+    totalCount: 0,
+    perNode: playground.perNode,
+    warnings: playground.warnings,
+    playgroundOutput: playground.outputValue,
+  };
+}
+
+// Run a customProgram's code in dataflow mode: transform(input) takes a
+// string and returns a string. Mirrors customProgramExec.js but with the
+// dataflow signature instead of the flow {readIn, writeIn, ...} shape.
+// Same safety model: single-user, page-scope new Function() acceptable.
+function runDataflowProgram(code, input) {
+  if (typeof code !== 'string' || code.trim() === '') {
+    return { value: String(input), error: null };
+  }
+  let transform;
+  try {
+    const body = `${code}\n;return typeof transform === 'function' ? transform : null;`;
+    // eslint-disable-next-line no-new-func
+    transform = new Function(body)();
+  } catch (e) {
+    return { value: String(input), error: `Compile: ${e.message || String(e)}` };
+  }
+  if (typeof transform !== 'function') {
+    return {
+      value: String(input),
+      error: 'No `function transform(input)` found — define one to control the output.',
+    };
+  }
+  let out;
+  try {
+    out = transform(input);
+  } catch (e) {
+    return { value: String(input), error: `Run: ${e.message || String(e)}` };
+  }
+  // Coerce any return to a string so wires never carry undefined/object.
+  // The lesson framing is "user code is a serializer — return strings."
+  if (out == null) return { value: '', error: null };
+  if (typeof out === 'string') return { value: out, error: null };
+  return { value: String(out), error: null };
 }

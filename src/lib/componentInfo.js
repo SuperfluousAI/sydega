@@ -150,6 +150,36 @@ export const componentInfo = {
     connects: 'Wires from a Client. Wires out to several App Servers / VPSes / etc — that\'s the whole point.',
     realWorld: 'AWS ALB, HAProxy, Nginx in reverse-proxy mode. Same job: spread, don\'t pile.',
   },
+  textInput: {
+    description: 'A text field that emits its value down the wire. The starting point of every dataflow (JS Sandbox) puzzle.',
+    usage:
+      'Type into the field on the node body. When you click Run, the simulator walks the graph and pipes this string into the next node downstream.',
+    connects: 'Wires out to a Custom Program (or directly to a Text Output for an identity test).',
+    realWorld:
+      'Stand-in for any input source in production: a form field, an HTTP request body, a Kafka message, a CLI argument.',
+  },
+  textOutput: {
+    description: 'A read-only display that shows the last string it received from upstream.',
+    usage:
+      'Wire it as the last node in your dataflow. After Run, this is where you see your transform()\'s output.',
+    connects: 'Wires in from a Custom Program (the JS body) or directly from a Text Input (for identity tests).',
+    realWorld:
+      'Stand-in for any output sink: an HTTP response body, a log line, a database row, a downstream service\'s input.',
+  },
+  customProgram: {
+    description:
+      'A flow node whose passthrough behavior is defined by a JavaScript function you write. The escape hatch when no built-in component fits.',
+    usage:
+      'Edit the JavaScript in the Properties panel. transform(input) takes ' +
+      '{readIn, writeIn, latencyIn, p99LatencyIn} and returns {readOut, writeOut, latencyAdd, p99LatencyAdd}. ' +
+      'Outputs are clamped to the input — a node can\'t manufacture traffic.',
+    connects:
+      'Wires in from any flow source (Client, LB, etc.) and out to any downstream. Place it anywhere you\'d ' +
+      'normally put admission control, a sampler, a rate limiter, or a custom filter.',
+    realWorld:
+      'Token-bucket rate limiters, adaptive concurrency limits, sampling proxies, traffic shapers. ' +
+      'Anywhere production code reshapes a flow with logic instead of a knob.',
+  },
   // The unified service type — App Server, Worker, etc. live here keyed by
   // role. Lookup is via infoFor(node) below; the colon-keyed entries are an
   // implementation detail callers don't need to know about.

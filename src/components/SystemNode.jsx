@@ -258,6 +258,64 @@ export default function SystemNode({ data, selected }) {
     );
   }
 
+  // Dataflow components have their own node bodies: textInput is an
+  // editable text field; textOutput shows the last string it received
+  // from the simulator. Both keep the standard header + floating handles.
+  if (data.type === 'textInput') {
+    return (
+      <div
+        className={`system-node text-io-node ${data.failed ? 'failed' : ''}`}
+        style={{
+          borderColor: selected ? '#fff' : meta.color,
+          boxShadow: selected ? `0 0 0 2px ${meta.color}` : undefined,
+        }}
+      >
+        <div className="system-node-header" style={{ background: meta.color }}>
+          <span>{meta.label}</span>
+          {menu}
+        </div>
+        <div className="system-node-body">
+          <input
+            className="text-input-field nodrag nopan"
+            type="text"
+            value={cfg.value ?? ''}
+            placeholder="Type something…"
+            onChange={(e) => data.onConfigChange?.({ ...cfg, value: e.target.value })}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+        <FloatingHandles hasInput={meta.hasInput} hasOutput={meta.hasOutput} />
+      </div>
+    );
+  }
+  if (data.type === 'textOutput') {
+    // Dataflow sim records the value this node received via perNode[id].value.
+    const received = sim?.kind === 'dataflowValue' ? sim.value : undefined;
+    return (
+      <div
+        className={`system-node text-io-node ${data.failed ? 'failed' : ''}`}
+        style={{
+          borderColor: selected ? '#fff' : meta.color,
+          boxShadow: selected ? `0 0 0 2px ${meta.color}` : undefined,
+        }}
+      >
+        <div className="system-node-header" style={{ background: meta.color }}>
+          <span>{meta.label}</span>
+          {menu}
+        </div>
+        <div className="system-node-body">
+          {received != null ? (
+            <pre className="text-output-display">{String(received)}</pre>
+          ) : (
+            <div className="text-output-empty">Run to see output</div>
+          )}
+        </div>
+        <FloatingHandles hasInput={meta.hasInput} hasOutput={meta.hasOutput} />
+      </div>
+    );
+  }
+
   const summary = summarize(data.type, cfg);
   const simLine = sim ? simSummary(data.type, sim) : null;
   const isBad = sim && simLine && simLine.tone === 'bad';

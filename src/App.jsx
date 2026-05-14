@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Canvas from './components/Canvas.jsx';
 import Palette from './components/Palette.jsx';
 import PropertyPanel from './components/PropertyPanel.jsx';
-import LessonPanel from './components/LessonPanel.jsx';
 import PuzzleBar from './components/PuzzleBar.jsx';
 import ResizeHandle from './components/ResizeHandle.jsx';
 
@@ -13,7 +12,7 @@ import { prepopulateComputerHardware, snapAllParentedChildren, sortParentsFirst,
 import { componentTypes, metaFor } from './lib/componentTypes.js';
 import { findHintRationale, findHintEdgeRationale } from './lib/hintRationale.js';
 import { computeOvershoot } from './lib/containerBehavior.js';
-import { puzzles, defaultPuzzleId, evaluatePuzzle } from './lib/puzzles.js';
+import { puzzles, puzzleOrder, defaultPuzzleId, evaluatePuzzle } from './lib/puzzles.js';
 
 import './App.css';
 
@@ -28,8 +27,29 @@ function edgeKindColor(kind) {
 // (R1 + R2 from CONTAINER_BEHAVIOR.md). This module just imports and uses it.
 
 export default function App() {
-  const [activePuzzleId, setActivePuzzleId] = useState(defaultPuzzleId);
+  const [activePuzzleId, setActivePuzzleId] = useState(() => {
+    try {
+      const saved = localStorage.getItem('sdg-active-puzzle');
+      if (saved && puzzles[saved]) return saved;
+    } catch { /* ignore */ }
+    return defaultPuzzleId;
+  });
   const puzzle = puzzles[activePuzzleId];
+  // The currently-visible lesson track. Persisted so a mentee who closed
+  // the tab on the JS track lands back there next time.
+  const [activeTrack, setActiveTrack] = useState(() => {
+    try {
+      const saved = localStorage.getItem('sdg-active-track');
+      if (saved === 'systems' || saved === 'javascript') return saved;
+    } catch { /* ignore */ }
+    return puzzle.track || 'systems';
+  });
+  useEffect(() => {
+    try { localStorage.setItem('sdg-active-track', activeTrack); } catch { /* ignore */ }
+  }, [activeTrack]);
+  useEffect(() => {
+    try { localStorage.setItem('sdg-active-puzzle', activePuzzleId); } catch { /* ignore */ }
+  }, [activePuzzleId]);
 
   const [nodes, setNodes] = useState(() => puzzle.initialNodes());
   // Most puzzles start with no edges (the student wires them). Follow-up
@@ -86,6 +106,9 @@ export default function App() {
       return [];
     }
   });
+  const handleClearCompletion = useCallback((pid) => {
+    setCompletedPuzzleIds((ids) => ids.filter((id) => id !== pid));
+  }, []);
   const [celebrationKey, setCelebrationKey] = useState(0);
   // { id, sides: { top, right, bottom, left } } | null — which container is
   // currently being "tugged" by a child being dragged past its edges.
@@ -139,23 +162,9 @@ export default function App() {
     }
   }, [completedPuzzleIds]);
 
-  // LessonPanel + Palette collapse state — both persisted to localStorage so
-  // the user's preference survives reloads. Default expanded so first-time
-  // visitors see the lesson + palette content.
-  const [lessonCollapsed, setLessonCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem('sdg-lesson-collapsed') === '1';
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem('sdg-lesson-collapsed', lessonCollapsed ? '1' : '0');
-    } catch {
-      // ignore
-    }
-  }, [lessonCollapsed]);
+  // Palette collapse state — persisted to localStorage so the user's
+  // preference survives reloads. Default expanded so first-time visitors
+  // see the palette content.
   const [paletteCollapsed, setPaletteCollapsed] = useState(() => {
     try {
       return localStorage.getItem('sdg-palette-collapsed') === '1';
@@ -206,6 +215,9 @@ export default function App() {
   const [topPaneHeight, setTopPaneHeight] = useState(() => loadNum('sdg-top-pane-height', 280));
   const [paletteWidth, setPaletteWidth] = useState(() => loadNum('sdg-palette-width', 220));
   const [rightStackWidth, setRightStackWidth] = useState(() => loadNum('sdg-right-stack-width', 320));
+  const [rightStackCollapsed, setRightStackCollapsed] = useState(() => {
+    try { return localStorage.getItem('sdg-right-stack-collapsed') === '1'; } catch { return false; }
+  });
   useEffect(() => {
     try { localStorage.setItem('sdg-top-pane-height', String(topPaneHeight)); } catch { /* ignore */ }
   }, [topPaneHeight]);
@@ -215,6 +227,9 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem('sdg-right-stack-width', String(rightStackWidth)); } catch { /* ignore */ }
   }, [rightStackWidth]);
+  useEffect(() => {
+    try { localStorage.setItem('sdg-right-stack-collapsed', rightStackCollapsed ? '1' : '0'); } catch { /* ignore */ }
+  }, [rightStackCollapsed]);
 
   // Containers grow their actual width/height to fit children on the
   // right/bottom side. Never shifts position — left/top growth is purely
@@ -332,6 +347,16 @@ export default function App() {
         onSetPort: n.data.config?.port != null
           ? (port) => handleSetPort(n.id, port)
           : undefined,
+        // Generic config-change callback used by in-node editors (currently
+        // just textInput's value field). Mirrors handleConfigChange's effect
+        // without snapshotting — the textInput edits a string in real time
+        // and snapshotting every keystroke would flood the undo stack.
+        onConfigChange: (nextCfg) =>
+          setNodes((ns) =>
+            ns.map((nn) =>
+              nn.id === n.id ? { ...nn, data: { ...nn.data, config: nextCfg } } : nn
+            )
+          ),
       };
       const classes = [];
       if (scootingIds.includes(n.id)) classes.push('scooting');
@@ -600,8 +625,9 @@ export default function App() {
       <div
         className="app-body"
         data-palette-collapsed={paletteCollapsed ? 'true' : 'false'}
+        data-right-collapsed={rightStackCollapsed ? 'true' : 'false'}
         style={{
-          gridTemplateColumns: `${paletteCollapsed ? 36 : paletteWidth}px 1fr ${rightStackWidth}px`,
+          gridTemplateColumns: `${paletteCollapsed ? 36 : paletteWidth}px 1fr ${rightStackCollapsed ? 36 : rightStackWidth}px`,
         }}
       >
         <div className="palette-wrap">
@@ -609,10 +635,25 @@ export default function App() {
             puzzle={puzzle}
             onSwitchPuzzle={handleSwitchPuzzle}
             completedPuzzleIds={completedPuzzleIds}
+            onClearCompletion={handleClearCompletion}
             collapsed={paletteCollapsed}
             onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
             autoStack={autoStack}
             onToggleAutoStack={() => setAutoStack((v) => !v)}
+            activeTrack={activeTrack}
+            onSwitchTrack={(track) => {
+              setActiveTrack(track);
+              // If the current puzzle isn't in the new track, jump to the
+              // first puzzle of the new track so the player sees content.
+              const cur = puzzles[activePuzzleId];
+              if ((cur?.track || 'systems') !== track) {
+                const firstInTrack = puzzleOrder.find((pid) => {
+                  const t = puzzles[pid].track || 'systems';
+                  return t === track;
+                });
+                if (firstInTrack) handleSwitchPuzzle(firstInTrack);
+              }
+            }}
           />
           {!paletteCollapsed && (
             <ResizeHandle
@@ -663,26 +704,44 @@ export default function App() {
             </div>
           )}
         </div>
-        <div className="app-right-stack" data-lesson-collapsed={lessonCollapsed ? 'true' : 'false'}>
-          <ResizeHandle
-            orientation="horizontal"
-            side="left"
-            getCurrent={() => rightStackWidth}
-            onChange={setRightStackWidth}
-            min={240}
-            max={640}
-          />
-          <PropertyPanel
-            node={selectedNode}
-            onChange={handleConfigChange}
-            onDelete={handleDeleteNode}
-            onToggleFailed={handleToggleFailed}
-          />
-          <LessonPanel
-            puzzle={puzzle}
-            collapsed={lessonCollapsed}
-            onToggleCollapse={() => setLessonCollapsed((v) => !v)}
-          />
+        <div className={`app-right-stack${rightStackCollapsed ? ' app-right-stack--collapsed' : ''}`}>
+          {rightStackCollapsed ? (
+            <button
+              type="button"
+              className="right-stack-toggle right-stack-toggle--collapsed"
+              onClick={() => setRightStackCollapsed(false)}
+              aria-expanded="false"
+              title="Expand properties"
+            >
+              ◂
+            </button>
+          ) : (
+            <>
+              <ResizeHandle
+                orientation="horizontal"
+                side="left"
+                getCurrent={() => rightStackWidth}
+                onChange={setRightStackWidth}
+                min={240}
+                max={640}
+              />
+              <button
+                type="button"
+                className="right-stack-toggle"
+                onClick={() => setRightStackCollapsed(true)}
+                aria-expanded="true"
+                title="Collapse properties"
+              >
+                ▸
+              </button>
+              <PropertyPanel
+                node={selectedNode}
+                onChange={handleConfigChange}
+                onDelete={handleDeleteNode}
+                onToggleFailed={handleToggleFailed}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>

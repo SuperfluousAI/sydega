@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef } from 'react';
+
+import ChangelogBell from './ChangelogBell.jsx';
+import { useScrollHints } from './useScrollHints.js';
 
 export default function PuzzleBar({
   puzzle,
@@ -13,50 +16,80 @@ export default function PuzzleBar({
   celebrationKey = 0,
 }) {
   const hasSolution = typeof puzzle.solution === 'function';
-  // Slug = a short one-liner under the title. Falls back to the first sentence
-  // of the blurb so older lessons without an explicit slug still show context.
-  const slug = puzzle.slug || firstSentence(puzzle.blurb);
+  const background = Array.isArray(puzzle.background) ? puzzle.background : [];
+  const sources = Array.isArray(puzzle.sources) ? puzzle.sources : [];
+  const hasBackground = background.length > 0;
+  // Reading paragraphs: prefer the deep `background[]` content; otherwise
+  // surface the full `blurb` so multi-sentence intros aren't truncated
+  // (this is what the now-removed LessonPanel used to do). When falling
+  // back to the blurb, suppress the slug under the title — otherwise the
+  // first sentence would render twice (slug + opening of the blurb).
+  const readingParagraphs = hasBackground
+    ? background
+    : (puzzle.blurb ? [puzzle.blurb] : []);
+  const slug = puzzle.slug || (hasBackground ? firstSentence(puzzle.blurb) : null);
+  const hasReading = readingParagraphs.length > 0 || sources.length > 0;
 
-  // The results column caps height and scrolls when its content (sim metrics
-  // + many requirements + warnings) is taller than the cap. Show an explicit
-  // "▼ scroll for more" hint bar only when there's actual overflow AND the
-  // user isn't already at the bottom. Re-checked on content change (Run +
-  // simResult update) and on every scroll event.
+  // Results column scroll-hint: appears when the sim output + requirements
+  // overflow the fixed-height results region.
   const resultsRef = useRef(null);
-  const [showScrollHint, setShowScrollHint] = useState(false);
-  const [showScrollUpHint, setShowScrollUpHint] = useState(false);
-  useEffect(() => {
-    const el = resultsRef.current;
-    if (!el) return;
-    const check = () => {
-      const overflow = el.scrollHeight - el.clientHeight;
-      const atBottom = el.scrollTop >= overflow - 4;
-      const atTop = el.scrollTop <= 4;
-      setShowScrollHint(overflow > 4 && !atBottom);
-      setShowScrollUpHint(overflow > 4 && !atTop);
-    };
-    check();
-    el.addEventListener('scroll', check);
-    // ResizeObserver isn't available in jsdom; gracefully degrade by
-    // skipping the observer in test environments.
-    let ro;
-    if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(check);
-      ro.observe(el);
-    }
-    return () => {
-      el.removeEventListener('scroll', check);
-      if (ro) ro.disconnect();
-    };
-  }, [simResult, evaluation]);
+  const { showUp: showScrollUpHint, showDown: showScrollHint } = useScrollHints(
+    resultsRef,
+    [simResult, evaluation]
+  );
+
+  // Top-pane LEFT-side lesson reading region (duplicate of the right-side
+  // LessonPanel content per operator's preference — same lesson, two
+  // surfaces). Same scroll-hint pattern; deps include `puzzle.id` so the
+  // hook re-evaluates when switching lessons.
+  const readingRef = useRef(null);
+  const { showUp: showReadingUpHint, showDown: showReadingDownHint } = useScrollHints(
+    readingRef,
+    [puzzle.id]
+  );
 
   return (
     <header className="puzzle-bar">
+      <ChangelogBell />
       <div className="puzzle-info">
         <h1>
           <span className="lesson-pill">Lesson {puzzle.order}</span> {puzzle.title}
         </h1>
         {slug && <p className="puzzle-slug">{slug}</p>}
+        {hasReading && (
+          <div className="puzzle-reading-wrap">
+            {showReadingUpHint && (
+              <div className="puzzle-reading-scroll-hint puzzle-reading-scroll-hint--up" aria-hidden="true">
+                <span className="scroll-hint-arrow">▲</span>
+                <span className="scroll-hint-arrow">▲</span>
+              </div>
+            )}
+            <div ref={readingRef} className="puzzle-reading">
+              {readingParagraphs.map((para, i) => (
+                <p key={i} className="puzzle-reading-para">{para}</p>
+              ))}
+              {sources.length > 0 && (
+                <div className="puzzle-reading-sources">
+                  <div className="puzzle-reading-sources-label">Sources</div>
+                  <ul>
+                    {sources.map((s, i) => (
+                      <li key={i}>
+                        <a href={s.url} target="_blank" rel="noopener noreferrer">{s.title}</a>
+                        {s.note && <span className="puzzle-reading-source-note"> — {s.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            {showReadingDownHint && (
+              <div className="puzzle-reading-scroll-hint" aria-hidden="true">
+                <span className="scroll-hint-arrow">▼</span>
+                <span className="scroll-hint-arrow">▼</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div className="puzzle-actions">
         <button className="primary-button" onClick={onRun}>
@@ -95,56 +128,59 @@ export default function PuzzleBar({
         </button>
       </div>
       <div className="puzzle-results-wrap">
-      {showScrollUpHint && (
-        <div className="puzzle-results-scroll-hint puzzle-results-scroll-hint--up" aria-hidden="true">
-          <span className="scroll-hint-arrow">▲</span>
-          <span className="scroll-hint-arrow">▲</span>
-        </div>
-      )}
-      <div
-        ref={resultsRef}
-        className={`puzzle-results${simResult ? ' puzzle-results--has-data' : ''}`}
-      >
-        {!simResult && <div className="dim">Press Run to test your system.</div>}
-        {simResult && !simResult.ok && <div className="bad">Error: {simResult.error}</div>}
-        {simResult && simResult.ok && simResult.kind === 'flow' && <FlowResults r={simResult} />}
-        {simResult && simResult.ok && simResult.kind === 'composition' && (
-          <CompositionResults r={simResult} />
-        )}
-        {simResult && simResult.ok && simResult.kind === 'connectivity' && (
-          <ConnectivityResults r={simResult} />
-        )}
-        {simResult && simResult.ok && (
-          <div className="requirements">
-            {evaluation.results.map((r) => (
-              <div key={r.key} className={`req ${r.passed ? 'good' : 'bad'}`}>
-                <div className="req-line">
-                  {r.passed ? '✓' : '✗'} {r.label}
-                </div>
-                {!r.passed && r.lesson && <div className="req-lesson">{r.lesson}</div>}
-              </div>
-            ))}
-            {simResult.warnings && simResult.warnings.length > 0 && (
-              <div className="warnings">
-                {simResult.warnings.map((w, i) => (
-                  <div key={i} className="warning">⚠ {w}</div>
-                ))}
-              </div>
-            )}
-            {evaluation.passed && (
-              <div key={celebrationKey} className="banner good celebrate">
-                <span className="celebrate-emoji">🎉</span> Puzzle solved!
-              </div>
-            )}
+        {showScrollUpHint && (
+          <div className="puzzle-results-scroll-hint puzzle-results-scroll-hint--up" aria-hidden="true">
+            <span className="scroll-hint-arrow">▲</span>
+            <span className="scroll-hint-arrow">▲</span>
           </div>
         )}
-      </div>
-      {showScrollHint && (
-        <div className="puzzle-results-scroll-hint" aria-hidden="true">
-          <span className="scroll-hint-arrow">▼</span>
-          <span className="scroll-hint-arrow">▼</span>
+        <div
+          ref={resultsRef}
+          className={`puzzle-results${simResult ? ' puzzle-results--has-data' : ''}`}
+        >
+          {!simResult && <div className="dim">Press Run to test your system.</div>}
+          {simResult && !simResult.ok && <div className="bad">Error: {simResult.error}</div>}
+          {simResult && simResult.ok && simResult.kind === 'flow' && <FlowResults r={simResult} />}
+          {simResult && simResult.ok && simResult.kind === 'composition' && (
+            <CompositionResults r={simResult} />
+          )}
+          {simResult && simResult.ok && simResult.kind === 'connectivity' && (
+            <ConnectivityResults r={simResult} />
+          )}
+          {simResult && simResult.ok && simResult.kind === 'dataflow' && (
+            <DataflowResults r={simResult} />
+          )}
+          {simResult && simResult.ok && (
+            <div className="requirements">
+              {evaluation.results.map((r) => (
+                <div key={r.key} className={`req ${r.passed ? 'good' : 'bad'}`}>
+                  <div className="req-line">
+                    {r.passed ? '✓' : '✗'} {r.label}
+                  </div>
+                  {!r.passed && r.lesson && <div className="req-lesson">{r.lesson}</div>}
+                </div>
+              ))}
+              {simResult.warnings && simResult.warnings.length > 0 && (
+                <div className="warnings">
+                  {simResult.warnings.map((w, i) => (
+                    <div key={i} className="warning">⚠ {w}</div>
+                  ))}
+                </div>
+              )}
+              {evaluation.passed && (
+                <div key={celebrationKey} className="banner good celebrate">
+                  <span className="celebrate-emoji">🎉</span> Puzzle solved!
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      )}
+        {showScrollHint && (
+          <div className="puzzle-results-scroll-hint" aria-hidden="true">
+            <span className="scroll-hint-arrow">▼</span>
+            <span className="scroll-hint-arrow">▼</span>
+          </div>
+        )}
       </div>
     </header>
   );
@@ -262,5 +298,28 @@ function ConnectivityResults({ r }) {
         {r.allReach && r.visitorCount > 0 ? 'all' : 'not all'}
       </strong>
     </div>
+  );
+}
+
+function DataflowResults({ r }) {
+  return (
+    <>
+      <div className="result-row">
+        <span title="Number of test cases your function passed.">
+          Test cases passed
+        </span>
+        <strong className={r.passedCount === r.totalCount && r.totalCount > 0 ? 'good' : 'bad'}>
+          {r.passedCount} / {r.totalCount}
+        </strong>
+      </div>
+      {r.playgroundOutput != null && (
+        <div className="result-row result-row--divider">
+          <span className="result-row-label">Live output (current input)</span>
+        </div>
+      )}
+      {r.playgroundOutput != null && (
+        <pre className="dataflow-playground-output">{r.playgroundOutput}</pre>
+      )}
+    </>
   );
 }

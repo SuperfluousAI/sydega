@@ -40,6 +40,9 @@ vi.mock('reactflow', async () => {
                 key={n.id}
                 data-id={n.id}
                 data-type={n.data?.type}
+                data-parent={n.parentNode || ''}
+                data-x={n.position?.x ?? ''}
+                data-y={n.position?.y ?? ''}
                 data-shaking={shaking ? 'true' : 'false'}
                 className={`react-flow__node react-flow__node-system ${n.className || ''}`.trim()}
               />
@@ -263,6 +266,67 @@ describe('App visual contract — drop-target highlight', () => {
   });
 });
 
+describe('App visual contract — per-lesson clear completion', () => {
+  // Seed two lessons as completed in localStorage so the green-check + ✕
+  // affordance is in the DOM before render.
+  function setupWithCompleted(ids) {
+    localStorage.setItem('sdg-completed', JSON.stringify(ids));
+    return render(<App />);
+  }
+
+  it('renders a green check on each completed lesson', () => {
+    const { container } = setupWithCompleted(['buildComputer']);
+    const items = container.querySelectorAll('.lesson-item.completed');
+    expect(items.length).toBe(1);
+    expect(items[0].querySelector('.lesson-check')).not.toBeNull();
+  });
+
+  // VISUAL CONTRACT: the clearable ✕ must live inside the completed
+  // lesson row — it's the affordance that lets the player uncomplete just
+  // that lesson without leaking to other rows.
+  it('renders a .lesson-check-clear ✕ inside every completed lesson row', () => {
+    const { container } = setupWithCompleted(['buildComputer']);
+    const item = container.querySelector('.lesson-item.completed');
+    expect(item.querySelector('.lesson-check-clear')).not.toBeNull();
+    // Uncompleted rows do NOT carry the affordance.
+    const uncompleted = Array.from(container.querySelectorAll('.lesson-item:not(.completed)'));
+    expect(uncompleted.length).toBeGreaterThan(0);
+    uncompleted.forEach((row) => {
+      expect(row.querySelector('.lesson-check-clear')).toBeNull();
+    });
+  });
+
+  it('clicking the ✕ removes the completion (no more green check, no more .completed class)', () => {
+    const { container } = setupWithCompleted(['buildComputer']);
+    const item = container.querySelector('.lesson-item.completed');
+    expect(item).not.toBeNull();
+    act(() => {
+      fireEvent.click(item.querySelector('.lesson-check-clear'));
+    });
+    expect(container.querySelector('.lesson-item.completed')).toBeNull();
+    // Persisted: localStorage no longer carries the cleared id.
+    const stored = JSON.parse(localStorage.getItem('sdg-completed') || '[]');
+    expect(stored).not.toContain('buildComputer');
+  });
+
+  it('clicking the ✕ does NOT switch to that lesson (stopPropagation works)', () => {
+    // Mark lesson-2 completed so its row has the ✕. The currently active
+    // lesson is the default (lesson-1). After clicking ✕ on lesson-2 we
+    // expect lesson-1 to STILL be active.
+    const { container } = setupWithCompleted(['homeNetwork']);
+    const activeBefore = container.querySelector('.lesson-item.active');
+    expect(activeBefore).not.toBeNull();
+    const activeTitleBefore = activeBefore.querySelector('.lesson-title').textContent;
+    const completedRow = container.querySelector('.lesson-item.completed');
+    expect(completedRow).not.toBeNull();
+    act(() => {
+      fireEvent.click(completedRow.querySelector('.lesson-check-clear'));
+    });
+    const activeAfter = container.querySelector('.lesson-item.active');
+    expect(activeAfter.querySelector('.lesson-title').textContent).toBe(activeTitleBefore);
+  });
+});
+
 describe('App visual contract — auto-stack toggle', () => {
   it('renders the auto-stack checkbox in the palette by default ON', () => {
     const { container } = render(<App />);
@@ -311,6 +375,80 @@ describe('App visual contract — palette drag drop-target', () => {
     act(() => { fireDragOver(wrap, 450, 250); });
     const computer = container.querySelector('[data-id="computer-1"]');
     expect(computer.className).toMatch(/\bdrop-target\b/);
+  });
+
+  // Regression: dropping a palette item NEAR a container's edge (cursor
+  // just outside the container's bounds, but the component would visually
+  // land inside) used to leave the new node at top level. The top-level
+  // sibling-scoot then treated the container as a sibling and pushed it
+  // away ("Computer sinks lower and lower" on every near-miss drop).
+  //
+  // Fix: handleDrop now uses the dropped component's CENTER (cursor +
+  // nodeStyle/2) instead of the raw cursor when looking up the container.
+  // Mirrors handleNodeDragStop's existing center-based logic.
+  it('drops parented to the container when cursor is just outside but component would overlap', () => {
+    const { container } = render(<App />);
+    const wrap = container.querySelector('.canvas-wrapper');
+
+    // Lesson 1: Computer at world (280, 140) sized 340×220 → bounds
+    // (280..620, 140..360). Drop cursor at (270, 250): 10px LEFT of the
+    // Computer's left edge. CPU default size 170×90 → center at (355, 295)
+    // which IS inside the Computer.
+    const beforeCount = container.querySelectorAll('.react-flow__node-system').length;
+    const computerBefore = container.querySelector('[data-id="computer-1"]');
+    const computerYBefore = computerBefore.getAttribute('data-y');
+
+    act(() => {
+      const evt = new Event('drop', { bubbles: true, cancelable: true });
+      Object.assign(evt, {
+        clientX: 270,
+        clientY: 250,
+        dataTransfer: {
+          getData: (key) => (key === 'application/sdgame-type' ? 'cpu' : ''),
+          setData: () => {},
+        },
+      });
+      wrap.dispatchEvent(evt);
+    });
+
+    // 1. A new node was added.
+    const afterCount = container.querySelectorAll('.react-flow__node-system').length;
+    expect(afterCount).toBe(beforeCount + 1);
+
+    // 2. The new node is parented to the Computer (NOT top-level).
+    const cpuNodes = Array.from(container.querySelectorAll('[data-type="cpu"]'));
+    expect(cpuNodes.length).toBe(1);
+    expect(cpuNodes[0].getAttribute('data-parent')).toBe('computer-1');
+
+    // 3. The Computer's position has NOT changed (no top-level scoot).
+    const computerAfter = container.querySelector('[data-id="computer-1"]');
+    expect(computerAfter.getAttribute('data-y')).toBe(computerYBefore);
+    expect(computerAfter.getAttribute('data-x')).toBe('280');
+    expect(computerAfter.getAttribute('data-y')).toBe('140');
+  });
+
+  it('drops to top-level only when the component\'s center is clearly outside any container', () => {
+    const { container } = render(<App />);
+    const wrap = container.querySelector('.canvas-wrapper');
+
+    // Drop far to the left of everything — cursor (50, 50), center (135, 95):
+    // outside Computer's (280..620, 140..360) AND outside Program at (80,200).
+    act(() => {
+      const evt = new Event('drop', { bubbles: true, cancelable: true });
+      Object.assign(evt, {
+        clientX: 50,
+        clientY: 50,
+        dataTransfer: {
+          getData: (key) => (key === 'application/sdgame-type' ? 'cpu' : ''),
+          setData: () => {},
+        },
+      });
+      wrap.dispatchEvent(evt);
+    });
+
+    const cpuNodes = Array.from(container.querySelectorAll('[data-type="cpu"]'));
+    expect(cpuNodes.length).toBe(1);
+    expect(cpuNodes[0].getAttribute('data-parent')).toBe('');
   });
 
   it('clears drop-target when the drag leaves the wrapper entirely', () => {

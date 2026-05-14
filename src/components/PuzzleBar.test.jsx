@@ -32,9 +32,89 @@ function setup(puzzle, props = {}) {
   );
 }
 
-describe('PuzzleBar slug rendering', () => {
-  it('uses the first sentence of the blurb as a slug under the title', () => {
+describe('PuzzleBar top-pane reading area', () => {
+  const PUZZLE_WITH_READING = {
+    order: 19,
+    title: 'E-commerce',
+    slug: 'short slug',
+    background: ['First paragraph of background.', 'Second paragraph.'],
+    sources: [
+      { title: 'Source A', url: 'https://example.com/a', note: 'note' },
+      { title: 'Source B', url: 'https://example.com/b' },
+    ],
+    kind: 'flow',
+    requirements: [],
+  };
+
+  it('renders the reading area inside .puzzle-info on the LEFT side of the top pane', () => {
+    const { container } = setup(PUZZLE_WITH_READING);
+    const wrap = container.querySelector('.puzzle-reading-wrap');
+    expect(wrap).not.toBeNull();
+    // Must live inside the puzzle-info column (left), NOT inside puzzle-results-wrap (right).
+    expect(wrap.closest('.puzzle-info')).not.toBeNull();
+    expect(wrap.closest('.puzzle-results-wrap')).toBeNull();
+  });
+
+  it('renders every background paragraph + every source link', () => {
+    const { container } = setup(PUZZLE_WITH_READING);
+    const paras = container.querySelectorAll('.puzzle-reading-para');
+    expect(paras.length).toBe(2);
+    expect(paras[0].textContent).toBe('First paragraph of background.');
+    const links = container.querySelectorAll('.puzzle-reading-sources a');
+    expect(links.length).toBe(2);
+    expect(links[0].textContent).toBe('Source A');
+    expect(links[0].getAttribute('href')).toBe('https://example.com/a');
+  });
+
+  it('does NOT render the reading wrap when the puzzle has no background, sources, or blurb', () => {
+    const PUZZLE_EMPTY = { order: 1, title: 'Empty', kind: 'composition', requirements: [] };
+    const { container } = setup(PUZZLE_EMPTY);
+    expect(container.querySelector('.puzzle-reading-wrap')).toBeNull();
+  });
+
+  // Since LessonPanel was removed, the top-pane reading area must surface
+  // the full blurb whenever a lesson has no `background[]`. Previously
+  // only the first sentence (as the slug) would show, losing multi-
+  // sentence intros.
+  it('falls back to rendering the full blurb in the reading area when there is no background', () => {
     const { container } = setup(PUZZLE_WITH_BLURB);
+    const paras = container.querySelectorAll('.puzzle-reading-para');
+    expect(paras.length).toBe(1);
+    expect(paras[0].textContent).toBe(PUZZLE_WITH_BLURB.blurb);
+  });
+
+  // And in that fallback the slug under the title is suppressed so the
+  // first sentence doesn't render twice.
+  it('suppresses the slug under the title when falling back to the full blurb', () => {
+    const { container } = setup(PUZZLE_WITH_BLURB);
+    expect(container.querySelector('.puzzle-slug')).toBeNull();
+  });
+});
+
+describe('PuzzleBar changelog bell', () => {
+  // VISUAL CONTRACT: the bell must live INSIDE the puzzle-bar (so it
+  // anchors to the top-right corner via the bar's position: relative).
+  // Rendering elsewhere would put it in the wrong place visually.
+  it('renders the changelog bell inside .puzzle-bar', () => {
+    const { container } = setup(PUZZLE_WITH_BLURB);
+    const bell = container.querySelector('.changelog-bell');
+    expect(bell).not.toBeNull();
+    expect(bell.closest('.puzzle-bar')).not.toBeNull();
+  });
+});
+
+describe('PuzzleBar slug rendering', () => {
+  const PUZZLE_WITH_BACKGROUND_AND_BLURB = {
+    order: 2,
+    title: 'Has Background',
+    blurb: 'A short slug shown under the title. More detail after the first sentence.',
+    background: ['Some background paragraph.'],
+    kind: 'composition',
+    requirements: [],
+  };
+
+  it('uses the first sentence of the blurb as a slug when the puzzle has background', () => {
+    const { container } = setup(PUZZLE_WITH_BACKGROUND_AND_BLURB);
     const slug = container.querySelector('.puzzle-slug');
     expect(slug).not.toBeNull();
     expect(slug.textContent).toMatch(/A short slug shown under the title\./);
@@ -45,12 +125,6 @@ describe('PuzzleBar slug rendering', () => {
     const { container } = setup(PUZZLE_WITH_SLUG);
     const slug = container.querySelector('.puzzle-slug');
     expect(slug.textContent).toBe('Explicit one-liner from the puzzle definition.');
-  });
-
-  it('does not render the blurb in the puzzle-info area when an explicit slug is set', () => {
-    const { container } = setup(PUZZLE_WITH_SLUG);
-    const info = container.querySelector('.puzzle-info');
-    expect(info.textContent).not.toContain('Long blurb');
   });
 });
 

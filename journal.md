@@ -2615,3 +2615,156 @@ These were called out at deploy time. Capturing here so future-us can act on the
 
 4. **Misleading `/healthz` 200.** When the cold-start proxy is in the path, a 200 on `/healthz` can come from the proxy, NOT the app. Hit `/` (or a known-distinctive path) for ground truth on whether the actual pod is responding.
 
+## Session 1 Part 24 — 2026-05-14: Custom Program component + JS Sandbox track design + research. The platform broadens from "systems design game" to "systems design + teaching JS via the same visual canvas." Twelve JS lessons planned (J1-J12). No production code in this Part — the implementation lands in Part 25.
+
+### What this Part is
+
+A design conversation. The operator asked: could the existing Custom Program (a flow node whose passthrough behavior is user-written JS) carry a *second* role — teach JavaScript itself, with a text input piping into the function and a text output displaying the result? The honest answer was "yes, but it's a separate simulator with a different ontology." This Part is the design brief that came out of that conversation, the curriculum proposal, the research, and the resolved open questions.
+
+### Why this isn't out-of-scope
+
+The platform already has two distinct simulators (`flow`, `composition`, `connectivity`). Adding a fourth (`dataflow`) follows the same pattern. The Custom Program component, which already lives in the codebase as the escape hatch for flow puzzles, naturally extends to dataflow with no shape change — its `transform(input)` signature is generic enough to receive a string instead of a `{readIn, writeIn, ...}` object.
+
+The operator's framing: "while this is system design, overall i think it'd be a great educational tool that i could use to teach people. in the past i've mentored people and made it so that i steer them on how to do self focused programming and but lean heavily on my platform/SRE experience." The platform expands from "teach distributed systems" to "teach JavaScript using the same visual canvas — wire boxes, type code, see output."
+
+### The simulator design
+
+A new puzzle kind `'dataflow'`. Topo-sort the graph, walk it once, pass strings down each wire. Three components participate:
+
+- `textInput` (new) — `hasOutput: true`, role `source`. Body holds an editable string in `config.value`. Emits the value when the sim runs.
+- `customProgram` (existing, unchanged) — in dataflow context, `transform(input)` receives a string and returns a string. Same function signature the operator already wrote; only the data shape differs.
+- `textOutput` (new) — `hasInput: true`, role `sink`. Body shows the last received string. Wraps long text. Empty state hint: "Run to see output."
+
+The dataflow simulator is structurally simpler than the flow simulator — no rates, no capacity caps, no latency accumulation, no async pass. Just: walk the topo order, pass values forward. Estimated ~80 lines.
+
+### The serializer framing
+
+Operator surfaced this point during the conversation, and it's load-bearing:
+
+> "we can write whatever JS we want in the function but keep it known that these are serializers. JS custom code receives input and produces output. that's it. lessons should mention the caveat and make it known that real systems communicate in some very specific ways (include examples)."
+
+This is exactly the right framing. Real systems pass `application/json` over HTTP, Avro/protobuf bytes over Kafka, msgpack over gRPC. Our `textInput → customProgram → textOutput` is the same shape with the simplest possible payload: a string. The lessons (especially J9 "JSON in → JSON out") teach `JSON.parse` and `JSON.stringify` as the moment that connection clicks — *this* is what real systems do at every node boundary.
+
+This framing also constrains the scope of "what can flow on a wire" to strings. No "object passing" temptation. Anyone who wants structured data writes their own parser. That keeps the type system honest and the teaching grounded.
+
+### The curriculum — 12 JS lessons
+
+| #   | Title | What it teaches |
+|-----|-------|-----------------|
+| J1  | Hello, transform() | function syntax, return, string concat |
+| J2  | Uppercase | `.toUpperCase()`, single-line string ops |
+| J3  | Reverse | split + reverse + join, chaining |
+| J4  | Word count | `.split(' ').length`, returning a number-as-string |
+| J5  | Conditional greeting | if/else, empty checks, ternary |
+| J6  | Repeat the input | for-loops, accumulator strings |
+| J7  | Extract first word | indexing, `.slice`, edge cases |
+| J8  | Validate an email | regex (the .test/.match pattern) |
+| J9  | JSON in → JSON out | `JSON.parse`, modify field, `JSON.stringify`. **First lesson where the serializer framing is the explicit pedagogy.** |
+| J10 | Custom protocol | parse `key=value\nkey2=value2` into JSON. Teaches parsers as user code. |
+| J11 | Compose two programs | wire two customPrograms in series (e.g., uppercase → reverse). Pipelines. |
+| J12 | FizzBuzz | the classic. Loops + conditionals + string return. |
+
+L11 ("compose two programs") is where this curriculum quietly loops back to systems design — *real distributed pipelines are customPrograms wired in series with serializers between them*. The curriculum cross-pollinates without needing to call it out explicitly.
+
+### Lesson grading: test cases
+
+Existing systems lessons declare `requirements: [{ key, label, test, lesson }]` that grade simulator output (`r.successRate >= 0.99` etc.). Dataflow lessons declare `testCases: [{ input, expected }]` that grade the function's *behavior at specific inputs*. The simulator runs the graph once per test case. Requirements panel shows each test green/red.
+
+```js
+testCases: [
+  { input: 'world', expected: 'Hello, world' },
+  { input: 'Claude', expected: 'Hello, Claude' },
+  { input: '', expected: 'Hello, ' },
+]
+```
+
+This format generalizes cleanly to future lessons that want fuzzy matching (`{ matcher: 'contains', value: '...' }`) or property-based testing (`{ generator: fn, invariant: fn }`). v1 is exact string match.
+
+### Run modes: manual now, auto-run later
+
+The operator picked manual Run for v1 with the option to add an "auto-run on keystroke" toggle later. The implementation cost of manual Run is zero (use the existing Run button). The implementation cost of auto-run is **a Web Worker** — here's why.
+
+Synchronous `new Function()` is what the existing flow Custom Program uses, and it's fine for click-to-Run because a typo in user code only freezes the tab during that one Run. With auto-run, the function runs on every keystroke. A `while(true)` in user code means the tab is frozen between keystrokes and the user can't type their way out of it.
+
+The fix for auto-run is execution-in-Worker with a `worker.terminate()` after ~500ms with no reply. ~50 lines, fully self-contained. Not building it now; documented here so future-me knows it's the prerequisite for auto-run.
+
+### Sandboxing — the trust model
+
+Same as the flow Custom Program: single-user educational tool, no shared canvases. `new Function()` in the page scope is acceptable. If we ever add multiplayer / shared canvases / persistence of user code beyond their own localStorage, we'd move to a Worker sandbox unconditionally. Documented in `src/lib/customProgramExec.js`.
+
+### Track navigation: option B (track toggle)
+
+Two clean options were on the table:
+
+- A. One lesson list, two tags. Systems lessons (L1-L22) flow into JS lessons (J1-J12) by lesson order. Pill chip on each card identifies the track.
+- B. Track toggle at the top of the Palette. Two pills: "Systems / JavaScript". Click one, list filters to that track.
+
+Operator picked B. Reasoning: a mentee opens the app, hits the JavaScript pill, and only sees the JS curriculum. No noise. The two tracks have different goals (teach distributed systems vs teach JS), and B makes that boundary visible. Implementation: track tag on each puzzle (`track: 'systems' | 'javascript'`), pill toggle in Palette filters the list.
+
+### TypeScript consideration
+
+Operator asked: "could we do this in typescript? would that be too much"
+
+Two interpretations, both intentional:
+
+1. **Convert the existing app to TS.** Big detour. Type the simulator, all 22 puzzles, all components. Slows down the cool stuff for weeks. Not aligned with current momentum.
+2. **Teach TS instead of JS in the new lessons.** Would require bundling a TS-to-JS transpiler — Sucrase (~50KB), SWC-WASM (~500KB), or esbuild-WASM (~600KB). The teaching content (functions, strings, loops, regex) is identical typed or untyped, so the TS overlay would teach types specifically, not programming.
+
+Recommendation logged: **stay in JS for v1**. Add a "TypeScript mode" toggle as a v2 feature if there's demand. The Custom Program editor accepts source text; switching it to compile-via-Sucrase is a 1-day addition once the dataflow simulator exists. Not a fork in the road — a future feature.
+
+### Open questions resolved
+
+| Question | Answer |
+|----------|--------|
+| Track navigation | B (track toggle) |
+| Auto-run in v1 | Skip; manual Run only. Web Worker prerequisite documented. |
+| Test cases visible | Yes — show up-front in the lesson reading area, like existing requirements |
+| First lesson | J1 (Hello, transform) — friendlier than uppercase as an opener |
+| TypeScript | Stay in JS for v1; document as a future feature |
+| Input/output types | Strings only. Lessons that need structured data use `JSON.parse`. Matches real serializers. |
+| Multiple inputs per program | No — single input for v1. Could be added later via merge nodes or multi-arg signature. |
+
+### Research notes
+
+Searched and synthesized references for design patterns:
+
+1. **Node-RED's `msg` pattern** — wires carry serializable messages between black-box nodes. Closest existing-product analog. Validates the "wires carry strings" decision.
+2. **NoFlo + Flowhub** — flow-based programming for JS specifically. Confirms the dataflow simulator pattern is well-trodden.
+3. **Blockly / Scratch / Snap!** — generate JS behind the scenes from drag-and-drop blocks. Educational research consistently sequences first lessons the same way: variables → conditionals → loops → strings → arrays → objects → functions. Our J1-J12 mirrors that path with `transform()` as the wrapper instead of `console.log`.
+4. **Codecademy / Scrimba / freeCodeCamp** — interactive code-as-you-go format with auto-grading. Same shape as our test cases approach. Validates the "show test cases up front, grade on Run" UX choice.
+5. **Sandboxing research** — `new Function()` for trusted contexts; Web Workers for untrusted or freeze-protection needs; `Jailed` library exists if a third option ever needs custom permission scoping. Doc'd for future reference.
+
+Sources captured at conversation time:
+- nodered.org and Wikipedia's Node-RED entry
+- noflojs.org
+- Blockly docs at developers.google.com/blockly
+- Block-based education sequencing (St. Louis County Library Scratch/Blockly/Snap guide)
+- dev.to/alexgriss on JS sandbox architecture
+- healeycodes.com on sandboxing JavaScript code
+- github.com/asvd/jailed for the off-the-shelf sandbox library
+
+### What this Part didn't address (deferred to Part 25)
+
+- The dataflow simulator implementation.
+- `textInput` and `textOutput` component definitions + SystemNode rendering for them.
+- `evaluatePuzzle` extension to handle `kind: 'dataflow'` with test cases.
+- `DataflowResults` block in PuzzleBar to show per-case pass/fail.
+- The 12 lessons themselves with backgrounds, sources where applicable, and solution() functions.
+- Track toggle in Palette (the B option).
+- Tests for everything above.
+- Changelog entry announcing the JS track.
+
+Estimated ~1000 lines of new code across simulator, components, lessons, UI, tests. Will land as Part 25 in the same session.
+
+### Patterns worth keeping (from this Part specifically)
+
+1. **"Extend primitives, don't fork."** The Custom Program component carries dual purpose (flow + dataflow) with no code duplication. The temptation would have been to add `dataflowProgram` as a separate type for clarity. Resisting that temptation keeps the codebase coherent — one component, multiple contexts, same JS signature. Memory rule `feedback-extend-primitives` exists for this reason.
+
+2. **Document the threat model at the trust boundary.** `customProgramExec.js` already has the safety-model comment (single-user, page scope, `new Function()` OK). The auto-run Worker prerequisite is now in the journal as well so the path to escalation is obvious when it's needed.
+
+3. **Curriculum-first thinking.** Wrote out all 12 lesson titles + what each one teaches *before* writing any code. Forces the question "is this lesson sequence actually coherent?" up-front. Tweaking a lesson list is cheap; tweaking a simulator is expensive.
+
+4. **Cross-pollinate the curriculum back.** J11 ("Compose two programs") is a JS lesson that happens to also teach the systems-design concept of pipelines. The platform's two tracks aren't fully isolated — concepts bridge between them naturally. Worth keeping an eye out for more bridges.
+
+5. **The "serializer" framing as the pedagogy.** Calling out *upfront* that user code is "the deserializer + business logic + reserializer" is the conceptual bridge from "I'm writing a small JS function" to "I'm writing what every microservice in production is." Operator's instinct here was the load-bearing insight of the whole design conversation.
+

@@ -33,6 +33,62 @@ function edge(from, to, kind) {
   };
 }
 
+// Helper for JS Sandbox (dataflow) lessons. The shape is identical across
+// all 12 lessons — textInput → customProgram → textOutput, pre-wired, with
+// starter code that the player edits to pass the test cases. This helper
+// removes ~30 lines of boilerplate per lesson.
+function jsLesson({
+  id,
+  order,
+  title,
+  blurb,
+  background,
+  sources,
+  starterCode,
+  solutionCode,
+  testCases,
+  initialInputValue = '',
+}) {
+  return {
+    id,
+    order,
+    track: 'javascript',
+    title,
+    blurb,
+    background,
+    sources,
+    kind: 'dataflow',
+    allowedComponents: ['textInput', 'customProgram', 'textOutput'],
+    initialNodes: () => [
+      node('input-1', 'textInput', { x: 60, y: 200 }, { value: initialInputValue }),
+      node('prog-1', 'customProgram', { x: 320, y: 200 }, {
+        displayLabel: 'transform',
+        code: starterCode,
+      }),
+      node('output-1', 'textOutput', { x: 640, y: 200 }),
+    ],
+    initialEdges: () => [
+      edge('input-1', 'prog-1'),
+      edge('prog-1', 'output-1'),
+    ],
+    testCases,
+    solution: () => ({
+      nodes: [
+        node('input-1', 'textInput', { x: 60, y: 200 }, { value: initialInputValue }),
+        node('prog-1', 'customProgram', { x: 320, y: 200 }, {
+          displayLabel: 'transform',
+          code: solutionCode,
+        }),
+        node('output-1', 'textOutput', { x: 640, y: 200 }),
+      ],
+      edges: [
+        edge('input-1', 'prog-1'),
+        edge('prog-1', 'output-1'),
+      ],
+    }),
+  };
+}
+
 export const puzzles = {
   buildComputer: {
     id: 'buildComputer',
@@ -2244,6 +2300,588 @@ export const puzzles = {
       };
     },
   },
+
+  // ─── Sandbox lesson: write a Custom Program ─────────────────────────────
+  // Pedagogy: real systems-design components have declared behavior; the
+  // Custom Program is the escape hatch. The student writes JavaScript that
+  // decides how much flow passes through, modeling admission control / rate
+  // limiting / sampling. The default identity function ships overloading
+  // the VPS; cutting reads to 1000 protects it.
+  customProgramSandbox: {
+    id: 'customProgramSandbox',
+    order: 22,
+    title: 'Custom Program — Admission Control',
+    blurb:
+      'Write JavaScript that protects an overloaded VPS. A Client sends 2000 read req/s to a VPS that handles 1000 — drop a Custom Program in the middle and write a transform() that lets at most 1000 req/s through. Admission control: shed surplus at the gate so the expensive downstream isn\'t the bottleneck.',
+    slug: 'Write JavaScript that protects an overloaded VPS.',
+    background: [
+      'Up until now every component has had a *declared* shape: a VPS handles N req/s, a Load Balancer splits evenly, a Cache short-circuits reads. The Custom Program is the escape hatch — it runs whatever JavaScript you write, every Run, as a flow node.',
+      'The setup: a Client sends 2000 read req/s to a VPS that can only handle 1000. Without protection, the VPS drops half and becomes the bottleneck. Your job: write a Custom Program between them that lets at most 1000 req/s through — admission control. Successful requests still flow; surplus traffic is shed at the gate, before the expensive downstream hop.',
+      'Edit the Custom Program node\'s JavaScript in the Properties panel. The function signature is in the default code — it takes {readIn, writeIn, latencyIn, p99LatencyIn} and returns {readOut, writeOut, latencyAdd, p99LatencyAdd}. Outputs are clamped to the input (a node can\'t manufacture traffic). Errors in your code degrade to pass-through and surface as a warning.',
+    ],
+    sources: [
+      {
+        title: 'Stripe — Scaling your API with rate limiters',
+        url: 'https://stripe.com/blog/rate-limiters',
+        note: 'Token-bucket and load-shedding patterns; the same shape as what you\'re writing here.',
+      },
+      {
+        title: 'Adrian Cockcroft — Adaptive concurrency limits',
+        url: 'https://www.adrianhornsby.tech/post/load-shedding',
+        note: 'Why protecting a downstream from overload matters more than serving every request.',
+      },
+    ],
+    kind: 'flow',
+    allowedComponents: ['client', 'customProgram', 'vps'],
+    initialNodes: () => [
+      node('client-1', 'client', { x: 60, y: 220 }, { rps: 2000, readRatio: 1 }),
+      node(
+        'vps-1',
+        'vps',
+        { x: 720, y: 220 },
+        { capacity: 1000, latency: 25, p99Latency: 75 }
+      ),
+    ],
+    requirements: [
+      {
+        key: 'hasCustomProgram',
+        label: 'Uses a Custom Program',
+        predicate: { kind: 'presence', type: 'customProgram', min: 1 },
+        lesson:
+          'Drag a Custom Program onto the canvas between the Client and the VPS. Wire ' +
+          'Client → Custom Program → VPS. Then click the Custom Program and edit its JavaScript.',
+      },
+      {
+        key: 'vpsNotOverloaded',
+        label: 'VPS is not the bottleneck',
+        // The bottleneck label is the role-aware label of the highest-dropping
+        // node. A successful admission-control solution drops at the gate, so
+        // the customProgram becomes the bottleneck (or there are zero drops).
+        test: (r) => r.bottleneckLabel !== 'VPS',
+        lesson:
+          'When your Custom Program lets the full 2000 req/s through, the VPS hits its 1000 ' +
+          'cap and drops the surplus — the VPS becomes the bottleneck. Cap readOut at 1000 ' +
+          'inside your transform() so the surplus is shed BEFORE it reaches the VPS.',
+      },
+      {
+        key: 'served',
+        label: 'Served ≥ 990 req/s',
+        test: (r) => r.totalReadServed >= 990,
+        lesson:
+          'Your Custom Program should let through ~1000 req/s — close to the VPS\'s capacity ' +
+          'so capacity isn\'t wasted, but not over it. Try `Math.min(input.readIn, 1000)`.',
+      },
+    ],
+    solution: () => ({
+      nodes: [
+        node('client-1', 'client', { x: 60, y: 220 }, { rps: 2000, readRatio: 1 }),
+        node(
+          'gate-1',
+          'customProgram',
+          { x: 360, y: 220 },
+          {
+            displayLabel: 'Admission Gate',
+            code: [
+              '// Admission control: shed surplus traffic at the gate so the VPS',
+              '// never sees more than it can handle.',
+              'function transform(input) {',
+              '  const CAP = 1000;',
+              '  return {',
+              '    readOut: Math.min(input.readIn, CAP),',
+              '    writeOut: input.writeIn,',
+              '    latencyAdd: 1,',
+              '    p99LatencyAdd: 3,',
+              '  };',
+              '}',
+            ].join('\n'),
+          }
+        ),
+        node(
+          'vps-1',
+          'vps',
+          { x: 720, y: 220 },
+          { capacity: 1000, latency: 25, p99Latency: 75 }
+        ),
+      ],
+      edges: [
+        edge('client-1', 'gate-1'),
+        edge('gate-1', 'vps-1'),
+      ],
+    }),
+  },
+
+  // ─── JavaScript Sandbox track (dataflow simulator) ─────────────────────
+  // 12 lessons (J1-J12) that teach JS via the customProgram. The graph is
+  // always textInput → customProgram → textOutput; the lesson is the JS the
+  // player writes inside transform(input). Test cases grade behavior at
+  // specific inputs. See journal Part 24 for the design conversation.
+
+  j1Hello: jsLesson({
+    id: 'j1Hello',
+    order: 'J1',
+    title: 'Hello, transform()',
+    blurb:
+      'Welcome to the JavaScript track. Every lesson is the same shape: a Text Input, a Custom Program (your code), and a Text Output. Click the Custom Program node to edit its code. Your function should return "Hello, " followed by whatever the Text Input emits. Press Run to test your code against the cases below.',
+    background: [
+      'In real systems, this exact shape is everywhere. An HTTP handler receives a request body (string), runs your code, returns a response body (string). A Kafka consumer reads a message (bytes), runs your code, writes a new message (bytes). The wires carry serialized data — your code is the deserializer + business logic + reserializer.',
+      'In this track, wires carry plain strings. Your function takes one string in and returns one string out. That\'s the simplest possible serialization protocol — and it\'s how every Unix pipeline works (stdout → stdin).',
+    ],
+    initialInputValue: 'world',
+    starterCode: [
+      '// Edit this so the output is "Hello, " followed by the input.',
+      '// For example, input "world" should produce "Hello, world".',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  return "Hello, " + input;',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'world', expected: 'Hello, world' },
+      { input: 'Claude', expected: 'Hello, Claude' },
+      { input: '', expected: 'Hello, ' },
+    ],
+  }),
+
+  j2Uppercase: jsLesson({
+    id: 'j2Uppercase',
+    order: 'J2',
+    title: 'Uppercase',
+    blurb:
+      'Strings in JavaScript have built-in methods. Return the input converted to uppercase. Hint: `.toUpperCase()`.',
+    background: [
+      'JavaScript strings carry methods — small functions attached to every string value. `.toUpperCase()` returns a new uppercase copy; `.toLowerCase()` returns lowercase. Strings in JS are immutable, so methods always return new strings instead of modifying the original. This is the same model as Python and Java; different from C, where strings are mutable arrays.',
+    ],
+    initialInputValue: 'hello world',
+    starterCode: [
+      '// Return the input as uppercase. Hint: input.toUpperCase()',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  return input.toUpperCase();',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'hello world', expected: 'HELLO WORLD' },
+      { input: 'JavaScript', expected: 'JAVASCRIPT' },
+      { input: '', expected: '' },
+    ],
+  }),
+
+  j3Reverse: jsLesson({
+    id: 'j3Reverse',
+    order: 'J3',
+    title: 'Reverse the input',
+    blurb:
+      'Reverse the characters of the input. JS doesn\'t have a `.reverse()` method on strings — but arrays do. The idiomatic trick: split into an array of characters, reverse the array, join it back.',
+    background: [
+      'Method chaining is one of JS\'s most-used patterns. Each method returns a new value, and you can call the next method on that result without storing intermediate variables. `input.split("").reverse().join("")` reads almost like English: "split into chars, reverse them, join them back."',
+      'In production code, this same chaining shape shows up everywhere: parse → validate → transform → serialize. Each step takes the previous step\'s output as its input. The textInput → customProgram → textOutput graph on your canvas is the same idea, just made visual.',
+    ],
+    initialInputValue: 'hello',
+    starterCode: [
+      '// Reverse the input string.',
+      '// Hint: input.split("").reverse().join("")',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  return input.split("").reverse().join("");',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'hello', expected: 'olleh' },
+      { input: 'JavaScript', expected: 'tpircSavaJ' },
+      { input: 'a', expected: 'a' },
+      { input: '', expected: '' },
+    ],
+  }),
+
+  j4WordCount: jsLesson({
+    id: 'j4WordCount',
+    order: 'J4',
+    title: 'Count the words',
+    blurb:
+      'Count the number of words in the input. A word is anything separated by whitespace. Return the count as a string (every wire in this track carries a string).',
+    background: [
+      'When you `.split(" ")` on a string, you get an array of the pieces between spaces. `.length` on an array gives the count. The challenge is that numbers and strings are different types in JS — to send a number through a string wire, you have to convert it, either with `String(n)` or by concatenating: `"" + n`.',
+      'This type conversion is exactly what real systems do at network boundaries. When you respond from an HTTP handler with a number, you\'re actually sending its string representation; the receiver parses it back to a number. Type discipline at boundaries is what makes distributed systems work.',
+      'Edge cases: what does `"".split(" ")` return? Try it. The simplest answer ("just split and count") may not be the right one when the input is empty.',
+    ],
+    initialInputValue: 'the quick brown fox',
+    starterCode: [
+      '// Return the number of words in the input, as a string.',
+      '// Words are separated by spaces. An empty input has 0 words.',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  if (input === "") return "0";',
+      '  return String(input.split(" ").length);',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'the quick brown fox', expected: '4' },
+      { input: 'one', expected: '1' },
+      { input: 'a b c d e', expected: '5' },
+      { input: '', expected: '0' },
+    ],
+  }),
+
+  j5ConditionalGreeting: jsLesson({
+    id: 'j5ConditionalGreeting',
+    order: 'J5',
+    title: 'Conditional greeting',
+    blurb:
+      'If the input is empty, return "(no name)". Otherwise, return "Hi, " + input. Practice writing an if/else.',
+    background: [
+      'Almost every real-world function starts with input validation: handle the empty/null/malformed case before the happy path. The pattern is so common it has names — "guard clauses", "defensive programming", "fail-fast".',
+      'In JS, the falsy values are `false`, `0`, `""`, `null`, `undefined`, and `NaN`. An `if (input)` check treats an empty string as false, which is often what you want for "did the caller give me anything?" Be careful though — `if (input)` also treats `"0"` as truthy (it\'s a non-empty string), so the check is exactly "is this a non-empty string?", not "is this a real value?"',
+    ],
+    initialInputValue: 'Claude',
+    starterCode: [
+      '// If input is empty, return "(no name)".',
+      '// Otherwise, return "Hi, " + input.',
+      'function transform(input) {',
+      '  return "Hi, " + input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  if (input === "") {',
+      '    return "(no name)";',
+      '  }',
+      '  return "Hi, " + input;',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'Claude', expected: 'Hi, Claude' },
+      { input: 'world', expected: 'Hi, world' },
+      { input: '', expected: '(no name)' },
+    ],
+  }),
+
+  j6Repeat: jsLesson({
+    id: 'j6Repeat',
+    order: 'J6',
+    title: 'Repeat the input',
+    blurb:
+      'Return the input repeated 3 times, separated by " | ". For "hi" the output should be "hi | hi | hi". Use a loop.',
+    background: [
+      'JavaScript\'s `for` loop is the same shape as C\'s: `for (let i = 0; i < n; i++) { ... }`. Inside the loop you build up the answer in an accumulator variable — most often a string with `+=` or an array with `.push()`.',
+      'There\'s also a shorter way that doesn\'t use a loop at all: `Array(3).fill(input).join(" | ")`. Both work. Use whichever feels clearer — there\'s no single "correct" idiom in JavaScript, and that\'s actually a deliberate part of the language design.',
+      'In production code, "join with a separator" is the bread-and-butter pattern for building human-readable summaries: CSV rows, log lines, query strings. The `.join()` method exists specifically because this pattern is so common.',
+    ],
+    initialInputValue: 'hi',
+    starterCode: [
+      '// Return the input repeated 3 times, joined by " | ".',
+      '// Example: input "hi" → output "hi | hi | hi".',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  let out = "";',
+      '  for (let i = 0; i < 3; i++) {',
+      '    if (i > 0) out += " | ";',
+      '    out += input;',
+      '  }',
+      '  return out;',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'hi', expected: 'hi | hi | hi' },
+      { input: 'ok', expected: 'ok | ok | ok' },
+      { input: '', expected: ' |  | ' },
+    ],
+  }),
+
+  j7FirstWord: jsLesson({
+    id: 'j7FirstWord',
+    order: 'J7',
+    title: 'Extract the first word',
+    blurb:
+      'Return just the first word of the input. Words are separated by spaces. If the input is empty, return "".',
+    background: [
+      'String indexing in JS uses zero-based positions: `input[0]` is the first character, `input.length - 1` is the index of the last. `.slice(start, end)` returns the substring from `start` (inclusive) up to `end` (exclusive); omit `end` to get the rest of the string.',
+      'To find the first space, use `.indexOf(" ")`. It returns the index of the first match, or `-1` if not found. The "not found" case is the trap — when there\'s no space, the whole input IS the first word, so you return it unchanged.',
+      'Real-world cousin: parsing HTTP request lines (`"GET /path HTTP/1.1"` → split on space) and command-line argument parsing both use this same shape. The first whitespace-separated token has a special role in the protocol.',
+    ],
+    initialInputValue: 'the quick brown fox',
+    starterCode: [
+      '// Return just the first word.',
+      '// Hint: input.indexOf(" "), input.slice(0, n).',
+      '// If there is no space, the whole input is the first word.',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  const spaceAt = input.indexOf(" ");',
+      '  if (spaceAt === -1) return input;',
+      '  return input.slice(0, spaceAt);',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'the quick brown fox', expected: 'the' },
+      { input: 'hello', expected: 'hello' },
+      { input: 'one two', expected: 'one' },
+      { input: '', expected: '' },
+    ],
+  }),
+
+  j8ValidateEmail: jsLesson({
+    id: 'j8ValidateEmail',
+    order: 'J8',
+    title: 'Validate an email',
+    blurb:
+      'Return "valid" if the input looks like an email (has one @ with at least one character on each side, plus a "." after the @), else "invalid". Use a regex.',
+    background: [
+      'Regular expressions ("regex") are a tiny pattern-matching language built into JS strings. `/pattern/.test(string)` returns true/false; `/pattern/.exec(string)` returns the matched parts. The pattern syntax is dense but the basics cover most uses: `.` (any char), `*` (zero or more), `+` (one or more), `^` (start), `$` (end), `[abc]` (any of a/b/c), `\\d` (digit), `\\w` (word char).',
+      'Real email validation is famously hard — the official spec (RFC 5322) allows things you would never put in a real input field (quoted local parts, IP literals, etc.). In production, the right move is usually "send a confirmation email" — if the email arrives, it\'s valid. The 90% regex below is fine for client-side feedback, not for security checks.',
+      'Try a regex like `/^.+@.+\\..+$/`. Read it as: start, one-or-more-chars, @, one-or-more-chars, ".", one-or-more-chars, end.',
+    ],
+    initialInputValue: 'corey@example.com',
+    starterCode: [
+      '// Return "valid" if input matches the email shape, else "invalid".',
+      '// Hint: a regex like /^.+@.+\\..+$/ catches the common cases.',
+      'function transform(input) {',
+      '  return "invalid";',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  if (/^.+@.+\\..+$/.test(input)) return "valid";',
+      '  return "invalid";',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'corey@example.com', expected: 'valid' },
+      { input: 'a@b.c', expected: 'valid' },
+      { input: 'no-at-sign', expected: 'invalid' },
+      { input: 'a@b', expected: 'invalid' },
+      { input: '', expected: 'invalid' },
+    ],
+  }),
+
+  j9JsonInOut: jsLesson({
+    id: 'j9JsonInOut',
+    order: 'J9',
+    title: 'JSON in, JSON out',
+    blurb:
+      'The input is a JSON object string like `{"name":"world"}`. Parse it, uppercase the `name` field, and return the result as a JSON string. **This lesson is the serializer story made literal** — real microservices do this exact dance at every HTTP boundary.',
+    background: [
+      'JSON is the most common data format on the modern internet. HTTP APIs, configs, logs, metrics, even most NoSQL databases store data as JSON. The contract: a JSON value is *always* serialized as a string before it travels (over a wire, into a file, into a queue), and *always* deserialized at the other end.',
+      '`JSON.parse(string)` turns a JSON string into a real JS object. `JSON.stringify(object)` turns a JS object back into a JSON string. These two functions are doing the same work as Avro / protobuf / msgpack in other ecosystems — they\'re the serializer + deserializer.',
+      'Your transform() here is structurally identical to a real REST API handler: receive a JSON request body (string), parse it, do something with the object, return a JSON response body (string). The wires on your canvas are the same wires in production — they carry strings, and your code is what gives those strings meaning.',
+    ],
+    sources: [
+      {
+        title: 'MDN — JSON.parse and JSON.stringify',
+        url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON',
+        note: 'The two functions that turn JSON strings into JS objects and back.',
+      },
+      {
+        title: 'json.org — the JSON spec, on one page',
+        url: 'https://www.json.org/',
+        note: 'The whole format fits on a single diagram.',
+      },
+    ],
+    initialInputValue: '{"name":"world"}',
+    starterCode: [
+      '// Parse the input as JSON, uppercase its `name` field,',
+      '// and return the new object as a JSON string.',
+      '// Hint: JSON.parse + obj.name.toUpperCase() + JSON.stringify',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  const obj = JSON.parse(input);',
+      '  obj.name = obj.name.toUpperCase();',
+      '  return JSON.stringify(obj);',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: '{"name":"world"}', expected: '{"name":"WORLD"}' },
+      { input: '{"name":"claude"}', expected: '{"name":"CLAUDE"}' },
+      { input: '{"name":"a"}', expected: '{"name":"A"}' },
+    ],
+  }),
+
+  j10CustomProtocol: jsLesson({
+    id: 'j10CustomProtocol',
+    order: 'J10',
+    title: 'Custom protocol → JSON',
+    blurb:
+      'The input is a tiny key/value protocol: `key=value` pairs, one per line. Parse it into a JSON object. For input `name=world\\nage=5`, return `{"name":"world","age":"5"}`. All values stay as strings.',
+    background: [
+      'Real systems are full of custom text protocols. HTTP headers are key:value pairs separated by newlines. INI configs are key=value with section headers. Environment variables are KEY=value in process memory. Every one of them is parsed by code that looks like what you\'re about to write — split lines, split each line on a separator, build a structure.',
+      'The pattern: `.split("\\n")` gives lines, `.split("=")` gives the key/value of each. Build an object incrementally with `obj[key] = value`. Then `JSON.stringify` it.',
+      'Once you can write a parser, you can write a *serializer* (the reverse — object back to text). That\'s where the customProgram framing pays off: every serialization format in the wild is just user code on both sides of the wire, agreed in advance on the shape.',
+    ],
+    initialInputValue: 'name=world\nage=5',
+    starterCode: [
+      '// Parse "key=value" lines into a JSON object.',
+      '// Example: "name=world\\nage=5" → {"name":"world","age":"5"}',
+      '// All values stay strings — no type coercion.',
+      'function transform(input) {',
+      '  return "{}";',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  const obj = {};',
+      '  for (const line of input.split("\\n")) {',
+      '    if (!line) continue;',
+      '    const eq = line.indexOf("=");',
+      '    if (eq === -1) continue;',
+      '    const key = line.slice(0, eq);',
+      '    const value = line.slice(eq + 1);',
+      '    obj[key] = value;',
+      '  }',
+      '  return JSON.stringify(obj);',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: 'name=world\nage=5', expected: '{"name":"world","age":"5"}' },
+      { input: 'host=localhost\nport=3000', expected: '{"host":"localhost","port":"3000"}' },
+      { input: 'a=1', expected: '{"a":"1"}' },
+      { input: '', expected: '{}' },
+    ],
+  }),
+
+  j11ComposeTwo: {
+    id: 'j11ComposeTwo',
+    order: 'J11',
+    track: 'javascript',
+    title: 'Compose two programs',
+    blurb:
+      'This lesson starts with TWO Custom Programs wired in series: Input → Program A → Program B → Output. Make Program A uppercase the input and Program B reverse it. The graph is your pipeline.',
+    background: [
+      'Real distributed systems are built exactly like this — a pipeline of single-purpose stages, each one taking the previous one\'s output and emitting its own. Unix `cat file | grep foo | wc -l`. Kafka producer → topic → consumer → topic → consumer. ETL: extract → transform → load.',
+      'The big payoff: each stage stays simple. You don\'t have one giant program that does everything; you have small programs that each do one thing and are easy to test and replace. The "small piece of code wired into a graph" pattern is at the heart of platform engineering. The customProgram + wires + text I/O graph on your canvas is a working microservices pipeline in miniature.',
+      'For this lesson: open Program A, write `return input.toUpperCase();`. Open Program B, write `return input.split("").reverse().join("");`. The wires do the rest.',
+    ],
+    kind: 'dataflow',
+    allowedComponents: ['textInput', 'customProgram', 'textOutput'],
+    initialNodes: () => [
+      node('input-1', 'textInput', { x: 40, y: 220 }, { value: 'hello' }),
+      node('prog-a', 'customProgram', { x: 260, y: 220 }, {
+        displayLabel: 'A',
+        code: [
+          '// Program A: uppercase the input.',
+          'function transform(input) {',
+          '  return input;',
+          '}',
+        ].join('\n'),
+      }),
+      node('prog-b', 'customProgram', { x: 520, y: 220 }, {
+        displayLabel: 'B',
+        code: [
+          '// Program B: reverse the input.',
+          'function transform(input) {',
+          '  return input;',
+          '}',
+        ].join('\n'),
+      }),
+      node('output-1', 'textOutput', { x: 780, y: 220 }),
+    ],
+    initialEdges: () => [
+      edge('input-1', 'prog-a'),
+      edge('prog-a', 'prog-b'),
+      edge('prog-b', 'output-1'),
+    ],
+    testCases: [
+      { input: 'hello', expected: 'OLLEH' },
+      { input: 'JavaScript', expected: 'TPIRCSAVAJ' },
+      { input: 'a', expected: 'A' },
+      { input: '', expected: '' },
+    ],
+    solution: () => ({
+      nodes: [
+        node('input-1', 'textInput', { x: 40, y: 220 }, { value: 'hello' }),
+        node('prog-a', 'customProgram', { x: 260, y: 220 }, {
+          displayLabel: 'A',
+          code: [
+            'function transform(input) {',
+            '  return input.toUpperCase();',
+            '}',
+          ].join('\n'),
+        }),
+        node('prog-b', 'customProgram', { x: 520, y: 220 }, {
+          displayLabel: 'B',
+          code: [
+            'function transform(input) {',
+            '  return input.split("").reverse().join("");',
+            '}',
+          ].join('\n'),
+        }),
+        node('output-1', 'textOutput', { x: 780, y: 220 }),
+      ],
+      edges: [
+        edge('input-1', 'prog-a'),
+        edge('prog-a', 'prog-b'),
+        edge('prog-b', 'output-1'),
+      ],
+    }),
+  },
+
+  j12FizzBuzz: jsLesson({
+    id: 'j12FizzBuzz',
+    order: 'J12',
+    title: 'FizzBuzz',
+    blurb:
+      'The classic. Input is a number as a string. If divisible by 3 → "Fizz". If by 5 → "Buzz". If by both → "FizzBuzz". Otherwise return the number unchanged.',
+    background: [
+      'FizzBuzz is the de-facto first-interview programming question. It tests: can you write a function, can you handle conditionals, do you understand the order of cases (divisible-by-15 must come before divisible-by-3, or be expressed as "both"). It\'s a tiny puzzle that catches the rare programmer who really can\'t code their way out of it.',
+      'JS modulo is `%`. `15 % 3` is `0`. `15 % 5` is `0`. `15 % 15` is `0`. The "divisible by 3 AND 5" case is equivalent to "divisible by 15" — and you can check that first to avoid the order-of-cases trap.',
+      'You\'ll need `parseInt(input)` or `Number(input)` to turn the string-input into a number. JS, like most languages, does NOT do arithmetic on strings — `"15" % 3` actually returns 0 here because JS coerces, but it\'s bad form. Convert types explicitly.',
+    ],
+    initialInputValue: '15',
+    starterCode: [
+      '// Input is a number-as-string. Implement FizzBuzz:',
+      '//   divisible by 3      → "Fizz"',
+      '//   divisible by 5      → "Buzz"',
+      '//   divisible by both   → "FizzBuzz"',
+      '//   anything else       → the number unchanged',
+      'function transform(input) {',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    solutionCode: [
+      'function transform(input) {',
+      '  const n = Number(input);',
+      '  if (n % 15 === 0) return "FizzBuzz";',
+      '  if (n % 3 === 0) return "Fizz";',
+      '  if (n % 5 === 0) return "Buzz";',
+      '  return input;',
+      '}',
+    ].join('\n'),
+    testCases: [
+      { input: '1', expected: '1' },
+      { input: '3', expected: 'Fizz' },
+      { input: '5', expected: 'Buzz' },
+      { input: '6', expected: 'Fizz' },
+      { input: '10', expected: 'Buzz' },
+      { input: '15', expected: 'FizzBuzz' },
+      { input: '30', expected: 'FizzBuzz' },
+      { input: '7', expected: '7' },
+    ],
+  }),
 };
 
 export const puzzleOrder = [
@@ -2268,12 +2906,49 @@ export const puzzleOrder = [
   'ecommerceAtScale',
   'flashSaleAtScale',
   'searchAtScale',
+  'customProgramSandbox',
+  // JS Sandbox track (dataflow). Filtered separately in the Palette via the
+  // track toggle so they don't mix with the systems-design lessons by default.
+  'j1Hello',
+  'j2Uppercase',
+  'j3Reverse',
+  'j4WordCount',
+  'j5ConditionalGreeting',
+  'j6Repeat',
+  'j7FirstWord',
+  'j8ValidateEmail',
+  'j9JsonInOut',
+  'j10CustomProtocol',
+  'j11ComposeTwo',
+  'j12FizzBuzz',
 ];
 export const defaultPuzzleId = 'buildComputer';
 
 export function evaluatePuzzle(puzzle, simResult) {
   if (!simResult || !simResult.ok) {
     return { passed: false, results: [], error: simResult ? simResult.error : null };
+  }
+  // Dataflow puzzles grade themselves via test cases (input → expected
+  // output). Each test case becomes one row in the requirements view,
+  // showing what was run, what came back, and what was expected.
+  if (puzzle.kind === 'dataflow' && Array.isArray(simResult.caseResults)) {
+    const results = simResult.caseResults.map((c, i) => ({
+      key: `case-${i}`,
+      label: `Input ${JSON.stringify(c.input)} → ${JSON.stringify(c.expected)}`,
+      lesson: c.passed
+        ? null
+        : c.programErrors && c.programErrors.length > 0
+          ? `Your code threw an error on this input: ${c.programErrors[0].error}`
+          : `Got ${JSON.stringify(c.actual)} instead — review the transform() body.`,
+      passed: c.passed,
+      input: c.input,
+      expected: c.expected,
+      actual: c.actual,
+    }));
+    return {
+      passed: results.length > 0 && results.every((r) => r.passed),
+      results,
+    };
   }
   const results = puzzle.requirements.map((req) => {
     // A requirement carries either a declarative `predicate:` (new shape, the

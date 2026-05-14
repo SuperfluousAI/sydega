@@ -223,6 +223,147 @@ describe('flow simulator', () => {
   });
 });
 
+// ─── Custom Program (user-supplied JS) ──────────────────────────────────────
+
+describe('flow simulator: customProgram node runs user code as a flow filter', () => {
+  it('identity-style code passes traffic through unchanged', () => {
+    const code = `
+      function transform(input) {
+        return {
+          readOut: input.readIn,
+          writeOut: input.writeIn,
+          latencyAdd: 0,
+          p99LatencyAdd: 0,
+        };
+      }
+    `;
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 1000, readRatio: 1 }),
+      node('p', 'customProgram', { code }),
+      node('v', 'vps', { capacity: 5000, latency: 0, p99Latency: 0 }),
+    ], [edge('c', 'p'), edge('p', 'v')]);
+    expect(r.ok).toBe(true);
+    expect(Math.round(r.totalReadServed)).toBe(1000);
+    expect(Math.round(r.totalDropped)).toBe(0);
+  });
+
+  // Pedagogical core: a customProgram that caps readOut at 1000 sheds the
+  // surplus AT THE GATE so the downstream VPS isn't the bottleneck. This is
+  // the admission-control teaching the demo lesson is built around.
+  it('admission-control: capping readOut shifts the bottleneck off the VPS', () => {
+    const code = `
+      function transform(input) {
+        return {
+          readOut: Math.min(input.readIn, 1000),
+          writeOut: input.writeIn,
+          latencyAdd: 1,
+          p99LatencyAdd: 3,
+        };
+      }
+    `;
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 2000, readRatio: 1 }),
+      node('p', 'customProgram', { code, displayLabel: 'Admission Gate' }),
+      node('v', 'vps', { capacity: 1000, latency: 25, p99Latency: 75 }),
+    ], [edge('c', 'p'), edge('p', 'v')]);
+    expect(r.ok).toBe(true);
+    expect(Math.round(r.totalReadServed)).toBe(1000);
+    expect(Math.round(r.totalDropped)).toBe(1000);
+    // Without the gate, the VPS would be the bottleneck (dropping 1000).
+    // With the gate, drops happen at the customProgram instead.
+    expect(r.bottleneckLabel).not.toBe('VPS');
+  });
+
+  it('clamps readOut to [0, readIn] — a buggy function cannot manufacture traffic', () => {
+    const code = `
+      function transform(input) {
+        return { readOut: 99999, writeOut: 0, latencyAdd: 0, p99LatencyAdd: 0 };
+      }
+    `;
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 100, readRatio: 1 }),
+      node('p', 'customProgram', { code }),
+      node('v', 'vps', { capacity: 99999, latency: 0, p99Latency: 0 }),
+    ], [edge('c', 'p'), edge('p', 'v')]);
+    expect(r.ok).toBe(true);
+    // Output is clamped to the 100 rps the client sent — no amplification.
+    expect(Math.round(r.totalReadServed)).toBe(100);
+  });
+
+  it('latency from transform() accumulates onto the downstream path', () => {
+    const code = `
+      function transform(input) {
+        return { readOut: input.readIn, writeOut: 0, latencyAdd: 50, p99LatencyAdd: 100 };
+      }
+    `;
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 100, readRatio: 1 }),
+      node('p', 'customProgram', { code }),
+      node('v', 'vps', { capacity: 99999, latency: 10, p99Latency: 30 }),
+    ], [edge('c', 'p'), edge('p', 'v')]);
+    expect(r.ok).toBe(true);
+    // CustomProgram adds 50ms mean, VPS adds 10ms → 60 ms at the sink.
+    expect(r.avgLatency).toBeCloseTo(60, 1);
+    // p99: 100ms + 30ms = 130ms.
+    expect(r.avgP99Latency).toBeCloseTo(130, 1);
+  });
+
+  // CHAIN CONTRACT: customProgram is a regular flow node, so two of them
+  // back-to-back must compose normally — output of the first becomes the
+  // input of the second via standard edge propagation in topo order.
+  it('two customPrograms chain: first halves reads, second adds latency', () => {
+    const halve = `
+      function transform(input) {
+        return {
+          readOut: input.readIn / 2,
+          writeOut: input.writeIn,
+          latencyAdd: 0,
+          p99LatencyAdd: 0,
+        };
+      }
+    `;
+    const addLatency = `
+      function transform(input) {
+        return {
+          readOut: input.readIn,
+          writeOut: input.writeIn,
+          latencyAdd: 20,
+          p99LatencyAdd: 50,
+        };
+      }
+    `;
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 1000, readRatio: 1 }),
+      node('p1', 'customProgram', { code: halve, displayLabel: 'Halver' }),
+      node('p2', 'customProgram', { code: addLatency, displayLabel: 'Latencyer' }),
+      node('v', 'vps', { capacity: 99999, latency: 0, p99Latency: 0 }),
+    ], [edge('c', 'p1'), edge('p1', 'p2'), edge('p2', 'v')]);
+    expect(r.ok).toBe(true);
+    // Halver cuts 1000 → 500; the second program passes 500 through.
+    expect(Math.round(r.totalReadServed)).toBe(500);
+    // Only the second program added latency.
+    expect(r.avgLatency).toBeCloseTo(20, 1);
+    expect(r.avgP99Latency).toBeCloseTo(50, 1);
+  });
+
+  it('broken user code surfaces a warning and degrades to identity passthrough', () => {
+    const r = simulate(flow, [
+      node('c', 'client', { rps: 100, readRatio: 1 }),
+      node('p', 'customProgram', {
+        code: 'function transform(input) { throw new Error("oops"); }',
+        displayLabel: 'Buggy Gate',
+      }),
+      node('v', 'vps', { capacity: 99999, latency: 0, p99Latency: 0 }),
+    ], [edge('c', 'p'), edge('p', 'v')]);
+    expect(r.ok).toBe(true);
+    // Identity passthrough → all 100 reach the VPS.
+    expect(Math.round(r.totalReadServed)).toBe(100);
+    // The warning includes the user-visible display label so they know
+    // which Custom Program is misbehaving.
+    expect(r.warnings.some((w) => /Buggy Gate.*oops/.test(w))).toBe(true);
+  });
+});
+
 // ─── Failure injection ──────────────────────────────────────────────────────
 
 describe('flow simulator: failed nodes are removed from the topology', () => {
