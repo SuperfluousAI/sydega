@@ -11,5 +11,11 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Worktrees from the Agent isolation runs live under .claude/worktrees/
+    // and each carries a full copy of src/ — including test files. Without
+    // this exclude, vitest re-runs every test once per worktree and the
+    // count balloons from ~600 to thousands. Also exclude e2e/ (Playwright
+    // runs those separately).
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**', '**/e2e/**'],
   },
 })
