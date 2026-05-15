@@ -372,6 +372,64 @@ export const puzzles = {
     }),
   },
 
+  serverOverload: {
+    id: 'serverOverload',
+    order: 4.2,
+    track: 'systems',
+    difficulty: 'easy',
+    title: "When the Server Can't Keep Up",
+    blurb:
+      'A Client is firing 1500 req/s at a single VPS, but the VPS only handles 1000. The leftover 500 req/s have nowhere to go — they get dropped. Make the system stop dropping requests. Two valid moves: scale the VPS up (raise its capacity), or send less traffic (lower the Client\'s rps). Either passes — try the first.',
+    kind: 'flow',
+    allowedComponents: ['client', 'vps'],
+    background: [
+      'Every server has a ceiling. The Capacity (req/s) field on the VPS is not a target to aim for — it is a hard cap. When attempted traffic exceeds capacity, the excess does not queue politely; it is dropped on the floor. In real systems that means timeouts, 5xx errors, and angry users.',
+      'Here the numbers are deliberately blunt: 1500 req/s in, 1000 req/s of capacity, exactly 500 req/s dropped. Success rate works out to 1000/1500 ≈ 67%. The bottleneck label in the results panel will point at the VPS — that is the simulator telling you "this node is where everything jammed up."',
+      'There are two ways out, and both work. The first is to make the VPS bigger: bump its capacity above 1500. This is "vertical scaling" or "scale up" — buy a beefier machine. It is the natural first move and it is what real teams reach for first because it is the simplest. But hardware has a ceiling too — eventually you cannot buy a bigger box, or it gets prohibitively expensive. The other escape, "scale out" (more boxes behind a Load Balancer), is the subject of the next lesson.',
+    ],
+    initialNodes: () => [
+      // 1500 rps in, 1000 cap out → 500 dropped, ~67% success, VPS is the
+      // bottleneck. Pre-wired so the student lands on Run and sees the failure
+      // immediately — no setup, just the problem.
+      node('client-1', 'client', { x: 80, y: 220 }, { rps: 1500, readRatio: 1 }),
+      node('vps-1', 'vps', { x: 480, y: 220 }, { ip: '203.0.113.10', capacity: 1000, latency: 25 }),
+    ],
+    initialEdges: () => [edge('client-1', 'vps-1')],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'When a Client sends more req/s than a VPS can handle, the difference is dropped. With 1500 in and 1000 capacity, you lose 500/sec — only 67% of requests succeed. ' +
+          'Two valid fixes: raise the VPS capacity above 1500, or lower the Client rps to 1000 or less. In a real product you usually cannot tell users to send less traffic — so capacity goes up.',
+      },
+      {
+        key: 'noDrops',
+        label: 'Zero dropped requests',
+        test: (r) => r.totalDropped < 1,
+        lesson:
+          'Drops are not just a bad success rate — they are the visible symptom of a capacity ceiling being hit. Even one persistent dropped request per second means your system is leaking traffic. Match or exceed the incoming rate with capacity to drive drops to zero.',
+      },
+    ],
+    solution: () => ({
+      // Canonical fix: scale UP the VPS to 2000 capacity. 1500 in, 2000 out
+      // → 0 drops, 100% success. Lesson copy mentions the alternative (drop
+      // Client rps to 1000) but the canonical demonstrates "make the server
+      // bigger" — the natural first instinct before L5 teaches scale-out.
+      nodes: [
+        node('client-1', 'client', { x: 80, y: 220 }, { rps: 1500, readRatio: 1 }),
+        node(
+          'vps-1',
+          'vps',
+          { x: 480, y: 220 },
+          { ip: '203.0.113.10', capacity: 2000, latency: 25 }
+        ),
+      ],
+      edges: [edge('client-1', 'vps-1')],
+    }),
+  },
+
   addLoadBalancer: {
     id: 'addLoadBalancer',
     order: 5,
@@ -2936,6 +2994,7 @@ export const puzzleOrder = [
   'homeNetwork',
   'reachTheInternet',
   'pointDomain',
+  'serverOverload',
   'addLoadBalancer',
   'persistWithDatabase',
   'addACache',
