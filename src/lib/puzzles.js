@@ -578,6 +578,73 @@ export const puzzles = {
     }),
   },
 
+  cacheHitRate: {
+    id: 'cacheHitRate',
+    order: 6.5,
+    track: 'systems',
+    difficulty: 'easy',
+    title: 'What a Cache Hit Rate Means',
+    blurb:
+      'A Cache is already wired between the Client and the Database, but its hit rate is 0 — every read falls through to the DB. The DB is small (cap 100 r/s) and 500 reads/sec are coming in; most get dropped. Open the Cache properties and slide hitRate up until the Database stops dropping.',
+    background: [
+      'A cache is a small, fast store that sits in front of a slower, more expensive backend (usually a database). When a request comes in, the cache checks if it already has the answer. If yes — a *hit* — it responds directly without touching the database. If no — a *miss* — it falls through to the backend, fetches the value, and (typically) remembers it for next time.',
+      'The *hit rate* is the fraction of reads the cache answers on its own. 0.0 means every read is a miss and goes all the way to the DB; 1.0 means every read is a hit and the DB sees nothing. In this simulator, hit rate is a configurable knob — you set it directly. In production, hit rate is an *emergent* property of your access pattern, your cache size, and your eviction policy; you measure it, then tune around it.',
+      'Real internal caches (Redis, Memcached, ElastiCache) typically run 80–95% hit rates on hot read paths. Below ~80% the cache is barely earning its keep — the DB still feels most of the load. Above ~95% you may be cache-stale-data-bound rather than throughput-bound. This lesson is the smallest possible demonstration of the relationship: shrink the DB, dial the hit rate, watch the drops disappear.',
+    ],
+    kind: 'flow',
+    allowedComponents: ['client', { type: 'cache', role: 'internal' }, 'database'],
+    initialNodes: () => [
+      node('users', 'client', { x: 60, y: 240 }, { rps: 500, readRatio: 1 }),
+      // hit rate starts at 0 — every read falls through to a tiny DB and drops.
+      node('cache-1', 'cache', { x: 320, y: 240 }, { role: 'internal', hitRate: 0 }),
+      // Deliberately undersized DB: 100 r/s vs 500 r/s incoming with no cache help.
+      node('db-1', 'database', { x: 580, y: 240 }, { capacity: 100 }),
+    ],
+    initialEdges: () => [
+      edge('users', 'cache-1'),
+      edge('cache-1', 'db-1'),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'The Database caps at 100 r/s but 500 reads/sec are arriving. With hitRate=0 the Cache absorbs nothing — every read falls through and the DB drops 400. ' +
+          'Click the Cache and raise its hitRate. At 0.8 the cache absorbs 400 reads and only 100 reach the DB — exactly its capacity.',
+      },
+      {
+        key: 'hasCache',
+        label: 'Has a Cache wired in series',
+        predicate: { kind: 'presence', type: 'cache', role: 'internal', min: 1 },
+        lesson:
+          'The Cache is what makes the math work. Don\'t delete it — adjust its hitRate. Misses pass through to the DB; hits terminate at the Cache.',
+      },
+      {
+        key: 'hasDatabase',
+        label: 'Has a Database (persistence layer)',
+        predicate: { kind: 'presence', type: 'database', min: 1 },
+        lesson:
+          'The DB is still required — it\'s the source of truth. The Cache only stores *recent* answers; cold reads (misses) still need somewhere durable to land.',
+      },
+    ],
+    solution: () => ({
+      // 500 reads/sec; tiny DB cap 100. Hit rate 0.8 means cache absorbs 400,
+      // DB sees 100 reads — exactly at cap. Anything ≥0.8 passes; the canonical
+      // solution lands on 0.8 because that's the "Redis rule of thumb" the
+      // student will encounter again in L7 and beyond.
+      nodes: [
+        node('users', 'client', { x: 60, y: 240 }, { rps: 500, readRatio: 1 }),
+        node('cache-1', 'cache', { x: 320, y: 240 }, { role: 'internal', hitRate: 0.8 }),
+        node('db-1', 'database', { x: 580, y: 240 }, { capacity: 100 }),
+      ],
+      edges: [
+        edge('users', 'cache-1'),
+        edge('cache-1', 'db-1'),
+      ],
+    }),
+  },
+
   addACache: {
     id: 'addACache',
     order: 7,
@@ -3047,6 +3114,7 @@ export const puzzleOrder = [
   'serverOverload',
   'addLoadBalancer',
   'persistWithDatabase',
+  'cacheHitRate',
   'addACache',
   'readWriteSplit',
   'urlShortener',
