@@ -7,6 +7,14 @@
 
 export const changelog = [
   {
+    version: '2026-05-14h',
+    date: '2026-05-14',
+    entries: [
+      'Five new easy lessons to smooth the progression: L4.1 "Your First Request" + L4.2 "When the Server Can\'t Keep Up" bridge L4 → L5; L6.5 "What a Cache Hit Rate Means" + L6.7 "Latency Adds Up" bridge L6 → L7; L8.5 "Why Have Two" introduces redundancy + the failure-injection feature.',
+      'Playwright end-to-end browser tests added — each wave-1 lesson is verified to load + Show Solution + Run produces the green pass banner. Coverage vitest + jsdom can\'t reach (real HTML5 drag/drop, real CSS, real React Flow).',
+    ],
+  },
+  {
     version: '2026-05-14g',
     date: '2026-05-14',
     entries: [

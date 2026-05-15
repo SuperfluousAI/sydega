@@ -3141,3 +3141,91 @@ The global puzzle-contract tests (`puzzleOrder` lists only real ids, every puzzl
 
 5. **The bonus test asserts the contrast pair (one-failed serves; both-failed serves zero) — keep them together.** If you ever delete the both-failed half thinking it's redundant, you lose the assertion that *two* failures actually do strand traffic, and a future bug where the LB silently routes to a non-existent destination wouldn't be caught. The contrast is the proof, not just a sanity check.
 
+---
+
+## Session 1 Part 31 — 2026-05-14: Wave-1 closure — 5 easy lessons merged + Playwright e2e
+
+### What this Part is
+
+The merge + audit closure for Parts 26-30 (the five wave-1 easy lessons: L4.1, L4.2, L6.5, L6.7, L8.5). Five parallel subagents each built a lesson in their own worktree. This Part documents what the actual merge looked like, what surprised me, what's now live, and the wave-2 plan (the four architecture-touching lessons the operator said yes to with caveats).
+
+### What landed
+
+Test counts (cumulative): 598 → 605 → 613 → 624 → 631 → 638. Each merge adds 7-9 tests (3-5 lesson-specific + 4 framework auto-iterated from `puzzles.test.js`). Plus 5 new Playwright e2e tests (one per lesson), running in 2.9s total alongside the 3 smoke tests.
+
+Final wave-1 lesson order in the Palette:
+
+```
+... pointDomain (4)
+    yourFirstRequest (4.1)        ← NEW
+    serverOverload (4.2)          ← NEW
+    addLoadBalancer (5) ...
+... persistWithDatabase (6)
+    cacheHitRate (6.5)            ← NEW
+    latencyAddsUp (6.7)           ← NEW
+    addACache (7) ...
+... readWriteSplit (8)
+    whyHaveTwo (8.5)              ← NEW
+    urlShortener (9) ...
+```
+
+### What the subagent + worktree pipeline actually felt like
+
+**Wins.** Parallel build worked. Five agents in five worktrees finished in ~5 minutes wall-clock (longest agent at 313s). Sequential merge took ~10 minutes including conflict resolution. The agents each wrote their own per-puzzle journal entry, complete with "what might surprise a future maintainer" sections that read as carefully as anything I'd write by hand. Test count went from 598 → 638 with all new tests green on first run.
+
+**Friction.** Every merge conflicted on `puzzles.js` (the single source of truth for the `puzzles` object + `puzzleOrder` array) and `journal.md` (each agent appended at the end). Resolution was mechanical — accept both sides, fix ordering — but it was the choke point. Restructuring `puzzles.js` into a directory of imports would eliminate this; deferred (noted in Part 25 as a possible future foundational change).
+
+**Vitest gotcha.** The worktrees live under `.claude/worktrees/` and each carries a full copy of `src/` — including the test files. Vitest's default glob picks them all up, so the suite count silently 6x'd to 3635 tests on the first post-merge run. Fixed by adding `'**/.claude/**'` to `vitest.exclude` in `vite.config.js`. The framework auto-iteration over `puzzleOrder` also picks up worktree puzzle ids, so test counts can mislead — a real test count comparison needs the exclude in place.
+
+**Worktree cleanup.** `git worktree remove --force` refused with "lock reason: claude agent". The agent runtime holds locks; manual cleanup needs `-f -f` or waiting for the runtime to release. `.claude/` is gitignored so the locked worktrees don't pollute the repo — leave them and let the runtime clean up.
+
+### Pedagogy verification
+
+For each of the 5 lessons, the agents' tests assert:
+
+1. The canonical `solution()` actually passes the puzzle's `requirements` (regression: lesson is solvable).
+2. The initial state does NOT pass (regression: lesson is non-trivial).
+3. Lesson-specific pedagogical contracts:
+   - L4.2: initial `bottleneckLabel === 'VPS'`, drops in [490, 510], success in (0.65, 0.70).
+   - L6.5: threshold sweep — hitRate 0.0/0.5/0.7 fail; 0.8/0.9/1.0 pass.
+   - L6.7: initial `avgLatency > 50`; solution drives `avgLatency < 50`.
+   - L8.5: failure-injection test — failing one VPS leaves the other serving (500 rps), failing both strands all traffic.
+
+Plus the Playwright tests prove end-to-end the lesson loads, "Show solution" + Run produces the green banner — coverage vitest's mocked reactflow can't reach.
+
+### Pause-to-play moment
+
+This is the pause from the operator's memory rule. Before stacking wave-2 (the architecture-touching lessons), surface to operator for a play-through. The cliffs we wanted to fix:
+
+- L4 → L5: now L4 → L4.1 (single Client → VPS at safe rates) → L4.2 (the same shape overloaded) → L5. The student sees rps, served, dropped before L5 asks them to fix overload.
+- L6 → L7: now L6 → L6.5 (hit rate calibration with undersized DB) → L6.7 (path-sum latency) → L7. By the time L7 introduces a Cache with `hitRate: 0.8`, the student has felt the slider.
+- L8 → L9: now L8 → L8.5 (redundancy + failure-injection intro) → L9. Failure injection (feature shipped in Part 12) finally has its own teaching surface.
+
+### Wave-2 plan (architecture-touching lessons)
+
+Operator's call from earlier in this session:
+
+| #  | Lesson                       | Decision |
+|----|------------------------------|----------|
+| 1  | Two LANs, one ISP            | Option (c) — extend the connectivity (or composition) sim to model cross-LAN reachability. Extensive docs + rollback note. |
+| 2  | Multiple clients, one VPS    | Option (c) — extend the flow sim to track per-Client identity. Same caveats. |
+| 3  | Stateful vs Stateless        | Fold into L8.5's reading copy (already addressed in this Part's L8.5 entry). |
+| 4  | Ports and Listeners          | Fold into L4's reading (one-paragraph addition). |
+
+For #1 and #2, each gets a new design doc (`docs/SIM_MULTI_LAN.md`, `docs/SIM_MULTI_CLIENT.md`) describing the change, the motivation, the rollback path, and how to tell if the model is paying its keep. These will be spawned as separate agent runs after operator's play-test feedback on wave-1.
+
+For #3 (stateful/stateless folded into L8.5), the Part 30 entry above already documents the framing — explicit lesson-copy work is owed in a future Part.
+
+For #4 (ports folded into L4), trivial — add one paragraph to L4's `background` array.
+
+### Patterns worth keeping
+
+1. **Each lesson lives in its own `src/lib/lessons/<lessonId>.test.js`.** The agents independently converged on this — convention emerged from giving each agent the same brief but isolated worktrees. Vitest's default glob picks them up. The colocation means a regression points at the file the maintainer was editing, not at a generic "puzzles.test.js" rollup.
+
+2. **The per-puzzle journal entry as a deliverable.** Every agent shipped a "What might surprise a future maintainer" section in their journal entry. Those sections are where the load-bearing context lives — the "why this number" and "why this shape" that doesn't fit in code comments. Make this a required part of any future lesson agent brief.
+
+3. **The wave-1 → pause → wave-2 cadence.** Don't merge architecture-foundation changes mid-pipeline with safe lesson additions. The safe wave validates the pipeline; the foundation wave is a different kind of risk and deserves its own arc.
+
+4. **Test the canonical, test the initial, test the pedagogy.** All 5 wave-1 lessons have this three-test minimum. The third (lesson-specific pedagogical contract) is where the load-bearing assertion lives — it's what catches "the lesson stopped teaching the thing it claims to teach." Make this a checklist item for every new lesson.
+
+
