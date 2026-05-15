@@ -2916,3 +2916,64 @@ Test count: **598 → 605** (+7). 3 from the new file + 4 from the framework's `
 
 - **No `background` paragraph about overload yet.** That's deliberate. Teaching the bottleneck-and-fix mechanic is L5's job; if L4.1 mentions "but what if rps exceeds capacity?" the student walks into L5 with the answer already in their head. The background here ends with a teaser ("Lessons 5 onward turn the dial up") that points without giving away the punchline.
 
+---
+
+## Session 1 Part 27 — 2026-05-14: L4.2 When the Server Can't Keep Up
+
+### What this Part is
+
+One new lesson, slotted between L4.1 "Your First Request" (introduces Client → VPS at safe rates) and L5 "Add a Load Balancer" (multiple VPSes behind a LB). L4.2 is the emotional setup for L5 — the student sees drops for the first time and feels the capacity ceiling. Same two-node shape as L4.1, but the rps is dialed past the VPS's ceiling on purpose.
+
+The pedagogical arc across L4.1 → L4.2 → L5:
+- **L4.1**: "Here is a Client. Here is a VPS. Wire them. It works."
+- **L4.2**: "Now turn up the traffic. It breaks. Make the server bigger." *(scale up)*
+- **L5**: "Eventually you can't just make the server bigger. Put more boxes behind a Load Balancer." *(scale out)*
+
+L4.2 is intentionally the *simplest possible* bottleneck — one source, one sink, capacity ceiling hit. No fan-out, no multi-tier, no async. The whole point is to isolate "attempted > capacity → drops" so the student internalizes the concept before L5 introduces the second concept (load distribution).
+
+### Numbers
+
+- Initial: Client (rps=1500, readRatio=1) → VPS (cap=1000, latency=25ms).
+- Simulator output on initial: `totalDropped ≈ 500`, `successRate ≈ 0.667`, `bottleneckLabel = "VPS"`.
+- Canonical solution: bump VPS capacity to 2000. Simulator output: `totalDropped = 0`, `successRate = 1.0`.
+
+`readRatio: 1` is deliberate — this lesson is not about read/write split (that's L8), so all traffic is one kind. Keeps the mental model "1500 requests in, 1000 served, 500 dropped" arithmetically clean for the student reading the results panel.
+
+### Pedagogical decisions
+
+**Why TWO valid solutions, and what we picked as canonical.** Both "bump VPS capacity above 1500" and "drop Client rps to ≤ 1000" pass the requirements. We picked **scale up the VPS** as the canonical solution() because:
+
+1. **It matches real-world first instinct.** When a server is overloaded, the first thing every engineer reaches for is "make the box bigger." This is empirically true even though it's not always the *right* answer. The lesson should model the natural progression of thought.
+2. **It teaches what L5 will then correct.** L5's whole argument ("one VPS is being crushed by 3000 req/s — put a Load Balancer in front and scale out") only lands if the student already tried scale-up and felt its limits. Setting up the canonical as scale-up primes that argument.
+3. **It does not give away L5's trick.** A canonical that introduced a second VPS would steal L5's punchline. Scale-up stays inside L4.2's one-node mental model.
+
+The blurb and background both explicitly mention the alternative ("or send less traffic, but in real products you can't tell users to send less") so the student understands they have agency over which knob to turn.
+
+**Why `successRate ≥ 0.99` instead of `= 1.0`.** Consistent with every other flow lesson (L5, L6, L7, ...) — gives the student a small numerical buffer for tweaks that *almost* exactly match capacity (e.g. bumping VPS to 1500 exactly). The pedagogical signal "stop dropping requests" is satisfied at 0.99+; demanding 1.0 would be punitive for fine-grained capacity tuning.
+
+**Two requirements, not one.** `successRate ≥ 99%` and `totalDropped < 1` are technically redundant (one implies the other in this two-node graph), but having both in the requirements list makes the failure mode legible — the student sees both "67% success" and "500 dropped" in the results panel and can connect cause to effect. The `lesson` strings on each one tell different halves of the story (capacity-ceiling math vs. what drops actually mean operationally).
+
+### Tests added
+
+`src/lib/lessons/serverOverload.test.js` — 4 targeted tests:
+1. **Shape**: puzzle exists with `id: 'serverOverload'`, `kind: 'flow'`, `difficulty: 'easy'`, `track: 'systems'`.
+2. **Canonical passes**: `solution()` simulated + evaluated → all requirements pass.
+3. **Initial fails + numbers are right**: initial state fails evaluation; `totalDropped` is in [490, 510]; `successRate` is in (0.65, 0.70). The numeric bounds pin down the lesson's load math so a future capacity/rps tweak can't silently soften it.
+4. **Bottleneck identification**: `result.bottleneckLabel === 'VPS'` — the simulator names the overloaded node, which is the visible signal in the UI that tells the student where to focus.
+
+Framework auto-coverage in `puzzles.test.js` (via `it.each(puzzleOrder)`) adds 4 more tests for the new puzzle: required-fields contract, allowedComponents references real types, initialNodes returns valid nodes, solution() passes evaluation. Total +8 tests.
+
+Test count 598 → 606 (+8). All green.
+
+### What might surprise a future maintainer
+
+1. **`puzzleOrder` placement assumes L4.1 may or may not exist on `main` yet.** As of this Part, `yourFirstRequest` is not in the array — a parallel worktree is adding it. `serverOverload` was inserted immediately after `pointDomain` (the current predecessor). If a merge brings in `yourFirstRequest`, the operator will reorder so the array reads `... pointDomain, yourFirstRequest, serverOverload, addLoadBalancer, ...`.
+
+2. **`order: 4.2` is a *decimal*, not a string.** The framework allows numeric or string `order` values (see `puzzles.test.js`: "Systems puzzles use numeric order; JS Sandbox lessons use 'J1', 'J2', etc."). Decimal-numeric works fine for sort. If someone later adds L4.3 / L4.4 follow-ups, this pattern extends naturally — no schema change needed.
+
+3. **No new components.** L4.2 reuses `client` and `vps` from L4.1. Same `componentInfo` entries. Same defaults. The lesson's pedagogical novelty is entirely in the *numbers* (rps = 1500 against cap = 1000), not new building blocks. If a future change touches `vps` capacity defaults, double-check the numeric bounds in `serverOverload.test.js` still hold.
+
+4. **`initialEdges()` is used.** Unlike most early lessons that have the student wire the edges themselves, L4.2 pre-wires Client → VPS so the student lands directly on the broken system and clicks Run. The pedagogical focus is "see the drops," not "wire two nodes." `initialEdges()` is the same hook L19.1 uses for sub-lesson pre-population.
+
+5. **Two valid solutions but only one canonical.** If a student opens the "Show solution" panel after dropping Client rps to 1000 (the other valid path), the canonical will instead show them bumping VPS capacity. That's deliberate — the "Show solution" UX is "here is one way" not "here is your way." Document this in lesson copy if play-tests reveal confusion.
+
