@@ -2768,3 +2768,108 @@ Estimated ~1000 lines of new code across simulator, components, lessons, UI, tes
 
 5. **The "serializer" framing as the pedagogy.** Calling out *upfront* that user code is "the deserializer + business logic + reserializer" is the conceptual bridge from "I'm writing a small JS function" to "I'm writing what every microservice in production is." Operator's instinct here was the load-bearing insight of the whole design conversation.
 
+## Session 1 Part 25 — 2026-05-14: 9 new easy lessons planned (5 "safe", 4 with architecture caveats) + agent-in-worktree autonomous build pipeline + Playwright introduction. This Part is the planning + arch-flag layer; Parts 26+ are per-lesson implementation.
+
+### What this Part is
+
+Operator's ask: smooth the progression with more easy lessons that string a learner's education along. We brainstormed nine candidate lessons — five that fit the existing simulator cleanly, and four where the sim model has known gaps that would force either content compromises or architecture changes. The build itself is being run as parallel subagents working in git worktrees with autonomous research + implementation + per-puzzle journaling, then merged back sequentially.
+
+### The pedagogical case
+
+The current systems track has two cliffs:
+
+1. **L4 (connectivity, "type a domain and reach a VPS") → L5 (flow, "3000 rps is crushing one VPS").** The student has never seen "requests per second," "capacity," or "dropped requests" before L5 introduces all three at once. The fix is two pre-flow easy lessons: a single-client/single-server happy path, then the same shape overloaded.
+
+2. **L6 (DB) → L7 (Cache).** L7 introduces "hit rate" as a config knob without ever defining what cache hit rate means. The fix is one easy lesson that puts a Cache between a Client and an undersized DB and lets the player slide the hit rate to feel what it does.
+
+There are also two pedagogy-shaped gaps (not cliffs but missing intros):
+
+3. **Latency is shown but never taught.** Avg latency just appears in the results pane. A lesson that explicitly builds a chain of stages and shows latency accumulating along the path would give the concept ceremony.
+
+4. **Failure injection is a feature without a pedagogy.** The fail toggle exists; no lesson teaches why a player would ever click it. A "Why Have Two" lesson introduces redundancy and uses the fail toggle as the lesson.
+
+### The 5 "safe" lessons (build immediately)
+
+These all fit the existing flow / composition / connectivity simulators with zero model changes.
+
+| ID    | Title                                | Insert at | Track flow | Teaches |
+|-------|--------------------------------------|-----------|------------|---------|
+| L4.1  | Your First Request                   | after L4  | Client → VPS, easy | rps, served, the basic flow shape |
+| L4.2  | When the Server Can't Keep Up        | after L4.1 | Client → VPS overloaded | capacity ceilings, what "dropped" means |
+| L6.5  | What a Cache Hit Rate Means          | between L6, L7 | Client → Cache → DB | hit rate = % of reads short-circuited |
+| L6.7  | Latency Adds Up                      | between L6, L7 | Client → LB → App Server → DB | latency accumulates along the path |
+| L8.5  | Why Have Two                         | after L8 | Client → LB → VPS + failure toggle | redundancy; why production runs ≥2 of everything |
+
+### The 4 "ideas I considered" — architecture caveats
+
+These four came up in the brainstorm; each has a sim-model gap I want to flag for operator decision BEFORE I commit a subagent to build them.
+
+1. **Two LANs, one ISP** — connect Router-A → ISP → Router-B. The connectivity simulator currently models Visitor → Domain → DNS Record → VPS. Whether "device on LAN-A reaches device on LAN-B through their respective ISPs" is a runnable pattern in the existing sim needs verification. Likely yes (ISP is a passthrough), but I want to confirm before building.
+
+2. **Multiple clients, one VPS** — the Client component aggregates `rps` as one number. 1 Client at 1000 rps is sim-equivalent to 10 Clients at 100 rps. The CONCEPT (many concurrent users) isn't expressible as a distinct teachable unit in our model. Two options: (a) ship the lesson with a "narration only" framing (multiple Clients on the canvas, same aggregate behavior, lesson explains "in the real world these are people; in our sim we model the aggregate"), (b) drop the lesson, (c) extend the model to track per-Client identity (architecture change). Option (a) is honest pedagogy; option (c) is overkill for one lesson.
+
+3. **Stateful vs Stateless** — the sim has no concept of "node loses data on restart." The closest hook is failure injection (a VPS fails, its load goes elsewhere). The lesson could be re-cast as: "your application logic on the VPS is fine to fail because the DB still has the data." That's actually an interesting frame and a real systems-design insight. Decision: re-cast the lesson around what the sim CAN model (DB persistence absorbing VPS failure) instead of what it can't (per-restart state loss).
+
+4. **Ports and Listeners** — multi-port Web Servers on one Computer. Mechanically works in the current sim (port is just a config field on the Web Server). Pedagogically narrow: "look, you can have two listeners on different ports" doesn't teach a system-design concept on its own. Could be folded into another lesson (e.g., L4's domain-to-VPS chain could explicitly call out that the VPS listens on port 80/443). Decision: probably drop as a standalone lesson; surface ports in lesson copy elsewhere.
+
+The architecture-relevant ones to discuss with operator BEFORE spawning agents:
+- #1 (Two LANs) — quick verification, then go
+- #2 (Multi-client) — choose framing (a) "narration only," (b) drop, or (c) model change
+- #3 (Stateful) — re-cast around DB persistence absorbing VPS failure (confirm framing OK)
+- #4 (Ports) — fold into existing lessons vs drop
+
+### Execution strategy
+
+**Autonomous subagents in git worktrees.** For the 5 "safe" lessons I'm spawning one subagent per lesson, each in its own git worktree (the Agent tool's `isolation: "worktree"` mode). Each agent's brief:
+
+1. **Research** — what does this lesson teach? What's the simplest canvas that demonstrates it? Any real-world references worth including in the lesson's `sources:` field?
+2. **Implement** — add the puzzle definition to `src/lib/puzzles.js` + append id to `puzzleOrder`. Set `difficulty: 'easy'`, `track: 'systems'`, `order: <decimal>`.
+3. **Test** — unit tests that the puzzle's `solution()` actually passes its `requirements`. Visual contract tests if the lesson introduces a new UI behavior. Existing test suite must stay green.
+4. **Journal** — append a per-puzzle Part to `journal.md` describing the design decisions, references, and any surprises hit during implementation.
+5. **Hand off** — return branch name + commit shas. The parent (me) handles the merge back.
+
+**Why worktrees:** parallel-without-conflict on the filesystem. Each agent has its own checkout. They never block each other.
+
+**Why sequential merge:** the puzzles.js file is shared. Each new lesson appends to `puzzles` (a JS object) and `puzzleOrder` (an array). Two agents adding in parallel can't both append to the same line — git will report a conflict. I serialize the merges and resolve each conflict by accepting both additions and updating the ordering.
+
+**Pause-to-play cadence (from operator memory).** After all 5 safe lessons are merged, surface to operator for a play-test before stacking the architecture conversation for the other 4. Don't ship everything in one massive batch.
+
+### Playwright introduction
+
+The project currently uses vitest + jsdom + a mocked reactflow. Vitest tests pass in ~2 seconds; they catch state mutations, predicate logic, and DOM presence after a mocked render. They don't catch:
+
+- Real-browser drag and drop (HTML5 DnD events behave differently in jsdom than in Chromium).
+- CSS issues — layout overflow, z-index clashes, animation jank.
+- The actual click-through experience of a lesson (does Hint work end-to-end? does Run show the green check?).
+
+Operator asked for "playwright tests where applicable." For each new lesson I'll add a Playwright smoke test that:
+
+1. Loads the dev server's `/?lesson=<id>` (or selects the lesson via the Palette).
+2. Asserts the expected components are in the palette.
+3. Clicks Hint until the puzzle's done.
+4. Clicks Run.
+5. Asserts the green-check banner appears (or whatever the puzzle's success signal is).
+
+Each Playwright test runs against a real Chromium instance. Slower than vitest (~5s per test) but they catch CSS / DnD bugs the mocked tests can't.
+
+**Where I'm NOT using Playwright:** for unit-level component logic (props, classNames, callback wiring). Vitest is faster and better. Playwright is for end-to-end "does the lesson actually work in a browser" coverage.
+
+### What I'm NOT doing (deferred)
+
+- **Restructuring puzzles.js into a directory of imports.** That would eliminate the merge-conflict pain on the central file. But it's a foundational change to the curriculum's hot path. Logged as a possible future refactor; not in scope here.
+- **CI Playwright integration.** Local Playwright runs only for v1. Adding Playwright to the build-push GHA workflow requires either headless browser installation in CI (slow) or hosting a deploy preview to run against (infra change). Deferred.
+- **Per-Client identity in the flow sim.** Would unlock the "multiple clients" lesson but is a meaningful sim refactor. Discuss with operator before considering.
+
+### Success criteria for this arc
+
+- All 5 safe lessons land. Each has its own journal entry. Existing vitest suite stays green. New vitest tests for each lesson exist + pass. Playwright smoke test exists + passes for each.
+- Architecture decisions on the other 4 are explicit + recorded. Whichever survive get built next.
+- Operator can play through L1 → L4 → **L4.1 → L4.2** → L5 → L6 → **L6.5 → L6.7** → L7 → L8 → **L8.5** → L9 without hitting a conceptual cliff that wasn't covered.
+
+### What this Part didn't address (deferred to per-puzzle Parts 26+)
+
+- The actual puzzle bodies (canonical `solution()`, `initialNodes()`, `requirements:`, reading paragraphs). Each subagent writes their own.
+- The Playwright config + first smoke test. I write the infra; subagents write the per-lesson tests.
+- Conflict resolution policy for puzzles.js. Documented above; executed during merge.
+
+
