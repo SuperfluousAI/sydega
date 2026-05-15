@@ -2768,3 +2768,47 @@ Estimated ~1000 lines of new code across simulator, components, lessons, UI, tes
 
 5. **The "serializer" framing as the pedagogy.** Calling out *upfront* that user code is "the deserializer + business logic + reserializer" is the conceptual bridge from "I'm writing a small JS function" to "I'm writing what every microservice in production is." Operator's instinct here was the load-bearing insight of the whole design conversation.
 
+## Session 1 Part 28 — 2026-05-14: L6.5 What a Cache Hit Rate Means
+
+### What this Part is
+
+A small, surgical pedagogy insert between L6 (Persist with a Database) and L7 (Add a Cache). L7 walks the student into a Cache with `hitRate: 0.8` already set on the canonical solution and asks them to absorb a 2000 r/s read flood. But "hit rate" is introduced as a number the student is told works, not a knob whose meaning they've felt. L6.5 is the calibration lesson: a single Cache, a deliberately undersized DB (100 r/s cap), 500 r/s of pure reads, hit rate starting at 0 — the student slides hitRate up and *watches* the drops collapse. By the time they get to L7, the knob is a knob they understand, not magic.
+
+Shape: Client (500 r/s, readRatio 1.0) → Cache (hitRate 0) → Database (cap 100). Pre-wired. allowedComponents is `['client', { type: 'cache', role: 'internal' }, 'database']` — just enough to redo the puzzle if the student deletes the wiring, but no decoy components to choose between. This is an *easy* lesson and "easy" means *one-knob*.
+
+### Pedagogical decisions
+
+**Threshold = 80% hit rate.** Three reasons:
+
+1. **The math lands cleanly.** 500 r/s × (1 − 0.8) = 100 r/s reach the DB; DB cap is exactly 100. The student sees the relationship as arithmetic, not approximation.
+2. **80% is the production rule of thumb.** Internal caches (Redis, Memcached) run 80–95% on hot read paths. The default `cache:internal.hitRate` in the codebase is 0.8 for exactly this reason. L6.5's threshold therefore *previews* the number the student will see again in L7's defaults and beyond.
+3. **It's not 100%.** Picking 100% would teach "a cache makes everything free" — wrong, and it skips the meaningful question of *what fraction is enough*. Picking 80% forces the student to land on a number that is empirically what real teams target.
+
+**DB capacity = 100 r/s (deliberately tiny).** The default DB cap is 1000, which would easily absorb 500 r/s of reads even with hitRate=0 — there would be no failure mode to repair. Shrinking the DB to 100 is the "undersized backend" framing that makes the cache *necessary*. The journal entry for the constants matters here because a future maintainer noticing "DB cap is 100, that's weird" should land on this paragraph.
+
+**Pre-wire, don't ask the student to wire.** The student already learned Client → AppServer → Database in L6 and the wiring isn't the point of L6.5. Initial canvas is fully wired so the only meaningful action is opening the Cache properties panel and dragging the slider. Anti-overengineering: do not test whether the student can re-do L6's wiring; test whether they understand what hit rate does.
+
+**No AppServer in this lesson.** L6 introduced AppServer; L7 keeps it; L6.5 *deliberately* doesn't. The shape Client → Cache → DB is anatomically wrong for production (you'd never put a cache directly in front of a DB with no app), but it removes a node from the canvas that has nothing to teach in this lesson. The student's cognitive budget goes to the *one* knob. L7 re-introduces the AppServer in the standard position. The trade-off (mild realism cost) is worth it for the focus.
+
+### Tests added
+
+`src/lib/lessons/cacheHitRate.test.js` (8 cases, 1 file, all green):
+
+1. `solution()` passes evaluation.
+2. Initial canvas (hitRate=0) does NOT pass — specifically the `successRate` requirement fails. (`hasCache` + `hasDatabase` are wired from the start, so the student can't fail those without actively deleting.)
+3. Initial Cache config really is `hitRate: 0` and DB capacity really is 100 — pinned preconditions. Catches the "future refactor changes defaults" drift class.
+4. `hitRate=0` → `totalDropped > 350` (the 400-drop math).
+5. `hitRate=0.8` → `totalDropped < 1` and `successRate ≥ 0.99`.
+6. `hitRate=1.0` → same as above (cache absorbs everything).
+7. Threshold sweep — `[0, 0.5, 0.7]` fail; `[0.8, 0.9, 1.0]` pass. Pins the canonical boundary.
+
+The pre-existing `puzzles.test.js` "every puzzle's solution() passes" + "every puzzle in puzzleOrder has the required fields" sweeps both pick this lesson up automatically. Total suite: 609 tests green (was 601 before this Part).
+
+### What might surprise a future maintainer
+
+- **`order: 6.5` is a float.** The codebase doesn't enforce integer ordering; numeric `order` is used only for display sort, and JS lessons use string orders like `'J1'`. Mixing in 6.5 to slot between L6 and L7 is intentional. If a future Part wants L6.3 too, that's fine — keep the float convention.
+- **The DB capacity override (100) lives on the puzzle's `initialNodes` AND `solution`.** It is *not* a default change. Don't be tempted to add a "tinyDb" role; just keep the override local to this puzzle. The default DB cap of 1000 still serves L6, L7, and everything downstream.
+- **`initialEdges` is used.** Most systems puzzles don't have one — the student wires from scratch. L6.5 is one of the few exceptions (along with L19.1 + L19.2) where the canvas comes pre-wired because the lesson is about a config knob, not a topology decision. The mechanism is supported (`App.jsx` reads `puzzle.initialEdges?.() || []`).
+- **There is no AppServer in this lesson but L7 has one.** That's the pedagogical choice from above, not an oversight. If you find yourself adding one "for realism" you've turned a one-knob lesson back into a multi-component lesson — re-read the "Pedagogical decisions" section.
+- **80% threshold is hard-coded via the DB cap.** Change the DB capacity and the passing threshold drifts. If a future maintainer wants a 90% threshold (because "production targets 90% these days"), the correct lever is DB capacity, not the requirement test — the test reads `successRate >= 0.99` and the threshold *emerges* from the cap-versus-load arithmetic. The threshold-sweep test will catch the drift.
+
