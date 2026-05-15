@@ -827,6 +827,81 @@ export const puzzles = {
     }),
   },
 
+  whyHaveTwo: {
+    id: 'whyHaveTwo',
+    order: 8.5,
+    track: 'systems',
+    difficulty: 'easy',
+    title: 'Why Have Two',
+    blurb:
+      'Production hardware breaks. Disks die, cables come loose, kernel panics happen. A system with only one of each component is a system with a single point of failure (SPOF) sitting at every box on the diagram. The cheapest insurance against "one machine died at 3am" is to have a *second* one of everything (or more), with a Load Balancer in front to spread traffic and route around whoever is currently dead. Try it: the canvas starts with a Client → LB → single VPS. Click the VPS, click "Simulate failure", and press Run — watch the traffic strand. Then drop a second VPS, wire it to the LB, and run again. The lesson is in your fingers.',
+    kind: 'flow',
+    allowedComponents: ['client', 'loadBalancer', 'vps'],
+    background: [
+      'Up until now the lessons have asked "can the system handle the load?" — a capacity question. This lesson asks a different one: "what happens when a piece of the system *dies*?" In production, hardware fails on its own schedule. Disks wear out. Network cables get yanked by a careless data-center tech. A kernel panic takes a process down at 3am. Cloud providers occasionally just turn off your VM and email you about it the next day. None of this is exotic — it\'s the baseline operating environment of any real service.',
+      'A system with only one of each component has a single point of failure (SPOF) at every single box on the diagram. One VPS goes down → the whole service is down. One Database fails → your data is unreachable. The textbook fix is also the cheapest one: have a *second* one of everything (or more), and put a Load Balancer in front so traffic can be steered to whichever copies are currently healthy. This pattern — Load Balancer in front of N identical backends — is the canonical high-availability shape. It shows up at every layer of every production stack you\'ve ever used.',
+      'In this lesson the canvas starts with Client → Load Balancer → a *single* VPS. The numbers work fine; success rate is 100%. But it\'s a SPOF in disguise. Try this before you solve it: click the VPS, click "Simulate failure" in its property panel, and press Run. The VPS goes grey and the LB has nowhere to send traffic — every request strands. Now add a second VPS, wire it to the LB, and run again. The LB splits the load (and if you fail one of the two, the other one keeps serving). That redundancy is the whole point. The requirement below — "at least 2 VPSes" — is the lesson\'s thumb on the scale, because no metric on a healthy system *forces* you to add redundancy. You have to choose to.',
+    ],
+    initialNodes: () => [
+      // Pre-place the whole single-VPS topology — Client, LB, one VPS, wired.
+      // Initial state runs clean (500 rps through LB to one cap-1000 VPS = no
+      // drops). The lesson is "the diagram looks fine until something dies."
+      node('client-1', 'client', { x: 60, y: 220 }, { rps: 500, readRatio: 1 }),
+      node('lb-1', 'loadBalancer', { x: 260, y: 220 }),
+      node('vps-1', 'vps', { x: 500, y: 220 }),
+    ],
+    initialEdges: () => [
+      edge('client-1', 'lb-1'),
+      edge('lb-1', 'vps-1'),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          '500 rps through one Load Balancer to N VPSes (each cap 1000). With everything healthy and at least one VPS wired, ' +
+          'success should be 100%. If it isn\'t, check that every VPS is wired to the LB and that no node is over capacity.',
+      },
+      {
+        key: 'hasLB',
+        label: 'Uses at least one Load Balancer',
+        predicate: { kind: 'presence', type: 'loadBalancer', min: 1 },
+        lesson:
+          'The Load Balancer is the routing layer that makes redundancy *useful*. Without it, the Client has to know about every VPS ' +
+          'and pick one — and if the one it picks is dead, the request fails. With the LB in front, the Client wires to one address; ' +
+          'the LB steers around whichever backend is down.',
+      },
+      {
+        key: 'hasRedundantVps',
+        label: 'At least 2 VPSes (no single point of failure)',
+        predicate: { kind: 'presence', type: 'vps', min: 2 },
+        lesson:
+          'One VPS is a SPOF — when it dies, the service dies. Two (or more) VPSes behind the LB means the service survives one failure: ' +
+          'click any VPS, hit "Simulate failure", and watch traffic continue flowing through the survivors. That\'s the whole reason ' +
+          'production systems run identical components in pairs (or larger pools). Real systems take this further — multiple availability ' +
+          'zones, multiple regions — but the pattern is the same: more than one of everything, fronted by a Load Balancer.',
+      },
+    ],
+    solution: () => ({
+      // 500 rps through LB → 2 VPSes (250 each, well under cap 1000). With
+      // both healthy, success rate is 100%. The pedagogical payoff: mark
+      // either VPS as failed and the other still handles the full 500 rps —
+      // proving the redundancy actually buys you something.
+      nodes: [
+        node('client-1', 'client', { x: 60, y: 220 }, { rps: 500, readRatio: 1 }),
+        node('lb-1', 'loadBalancer', { x: 260, y: 220 }),
+        node('vps-1', 'vps', { x: 500, y: 120 }),
+        node('vps-2', 'vps', { x: 500, y: 320 }),
+      ],
+      edges: [
+        edge('client-1', 'lb-1'),
+        edge('lb-1', 'vps-1'),
+        edge('lb-1', 'vps-2'),
+      ],
+    }),
+  },
+
   urlShortener: {
     id: 'urlShortener',
     order: 9,
@@ -3185,6 +3260,7 @@ export const puzzleOrder = [
   'latencyAddsUp',
   'addACache',
   'readWriteSplit',
+  'whyHaveTwo',
   'urlShortener',
   'clusterDatabase',
   'readReplicas',

@@ -3069,3 +3069,75 @@ Three tests in `src/lib/lessons/latencyAddsUp.test.js` (new directory — first 
 
 - **The DB and App both have their `latency` set explicitly in `initialNodes()` even though one matches the default and one doesn't.** Done on purpose so the seeded values aren't dependent on `componentTypes.js` defaults that might shift later. The initial state of this lesson is a sealed unit: 1 + 25 + 35 = 61, regardless of what defaults the rest of the codebase carries.
 
+---
+
+## Session 1 Part 30 — 2026-05-14: L8.5 Why Have Two
+
+(Operator may renumber this Part. Insert order between L8 "Read/Write Split" and L9 "URL Shortener".)
+
+### What this Part is
+
+A small bridge lesson between L8 (Read/Write Split — a capacity lesson) and L9 (URL Shortener — the first cross-cutting performance lesson). L8.5 introduces *redundancy as insurance against failure*, which is the conceptual prerequisite for the entire failure-injection feature the codebase already shipped in Part 12 but never explicitly taught.
+
+The shape: Client (500 rps reads) → LB → single VPS, pre-wired on the canvas. The puzzle is solved by adding a second VPS and wiring it to the LB. The capacity math is trivial — one VPS at cap 1000 handles 500 rps fine — so the lesson can't be a "the numbers force you to scale out" puzzle the way L5 (Add a Load Balancer) is. The teaching has to come from the lesson copy + a *deliberate* requirement that says "no, two is the answer, even though one technically works."
+
+Files touched:
+- `src/lib/puzzles.js` — new `whyHaveTwo` entry; `'whyHaveTwo'` inserted into `puzzleOrder` between `'readWriteSplit'` and `'urlShortener'`.
+- `src/lib/lessons/whyHaveTwo.test.js` — new file. Three vitests: solution passes, initial state fails on the redundancy predicate, failure-injection of one VPS leaves the other serving (and failing both strands all traffic).
+
+Test count: 602 → 605 (+3). All 22 test files green.
+
+### Pedagogical decisions
+
+**Why a presence predicate (`vps min: 2`) and not a forced failure scenario?**
+
+There were two paths:
+
+1. **Force failure injection.** Pre-fail one VPS in the initial graph so the puzzle is literally unsolvable until the student adds redundancy. Numbers tell the story.
+2. **Lean on presence + lesson copy.** Require `vps min: 2` as a flat rule, explain *why* in the requirement's `lesson:` string and the `background:` paragraphs, and explicitly invite the student to try the failure-injection feature themselves.
+
+Picked #2. The framework already supports presence predicates cleanly (see L5's `hasLB`), so the requirement reads naturally next to the others. Forcing a failure injection would mean either (a) shipping a node with `data.failed: true` in `initialNodes()` — which works but reads as a fragile coupling between the puzzle and the failure-injection UI mechanic, or (b) extending the puzzle schema to carry "pre-failed node ids," which is new surface area for one lesson.
+
+The cost of #2: a student can solve the puzzle by mindlessly adding a second VPS to clear the red row, without ever clicking "Simulate failure." That's a real failure mode. The mitigation is the explicit invitation in the blurb + background ("click the VPS, click Simulate failure, click Run again to see what happens"). A future Part can revisit this — see "What might surprise a future maintainer" below for the obvious upgrade.
+
+**Why 500 rps / one cap-1000 VPS for the initial state?**
+
+So the initial state runs *clean* — 100% success, no drops, no scary red on the metrics panel. The whole point of the lesson is "the diagram looks fine until something dies." If the numbers were tight (e.g. 1000 rps into one cap-1000 VPS), the student might "solve" the wrong problem (capacity) and miss the redundancy lesson. Loose numbers + a presence rule isolates the teaching to exactly the concept.
+
+**Why "easy" difficulty?**
+
+The mechanical work is "drag one more VPS, wire one edge" — strictly easier than L5 (which requires figuring out the throughput math). The conceptual work is high, but the puzzle interaction is at the lowest end of the difficulty scale, so "easy" fits the existing tag. Sort+filter UI groups it with L5 and L6 (also easy), which matches its placement in the curriculum.
+
+**Why an L8.5 numbered slot vs renumbering all downstream lessons?**
+
+Operator already used L19.1 and L19.2 for the e-commerce sub-lessons (see Part 22). The `order` field is `number | string` (puzzles.test.js line 51) and is purely display, so fractional orders work everywhere — the Palette renders by `order`, requirements panel doesn't care. Renumbering L9-L22 would touch lesson-cross-references in dozens of blurbs and break any external links/screenshots. L8.5 is the local-impact choice.
+
+### Tests added
+
+`src/lib/lessons/whyHaveTwo.test.js` — three cases:
+
+1. **`solution() passes all requirements`** — the standard contract test. Also asserts every individual `ev.results` row passes (so we don't silently regress one requirement while another covers).
+
+2. **`initial state (single VPS) does NOT pass`** — runs the puzzle's own `initialNodes()` + `initialEdges()` through `simulate()` and `evaluatePuzzle()`. Asserts:
+   - `successRate >= 0.99` (the capacity math works fine — this is the point),
+   - `ev.passed === false` (the puzzle still refuses to mark it solved),
+   - the failing requirement is specifically `hasRedundantVps` (not some other accidental fail).
+   
+   This is the test that pins the lesson's *pedagogy* in place. If a future change loosens the `vps min: 2` rule to `min: 1`, this test fails with a clear message.
+
+3. **`failing one VPS keeps the other serving (redundancy pays off)`** — the bonus test the task asked for. Takes the solution graph, marks `vps-1` as `data.failed: true`, runs the simulator, asserts the survivor handles all 500 rps. Then takes the same graph, fails BOTH VPSes, asserts `totalServed === 0`. The contrast pair is what makes the test prove the lesson's claim: redundancy converts a SPOF into a survivor; two-failures still kills the service. This is the test that would catch a future simulator regression where failed-sink edges silently kept routing traffic (a real bug class given how Lesson 14's leader-promotion logic mutates the same code path).
+
+The global puzzle-contract tests (`puzzleOrder` lists only real ids, every puzzle has required fields, allowedComponents references real types, solution passes) all pick up the new lesson automatically via the `it.each(puzzleOrder)` pattern in `puzzles.test.js`. No edits needed there.
+
+### What might surprise a future maintainer
+
+1. **`track: 'systems'` is set explicitly even though every other systems lesson omits it.** The codebase convention as of Part 24 is: systems lessons leave `track` undefined; JS lessons set `track: 'javascript'`. The task spec asked for `track: 'systems'` explicitly, so it's there. If you're standardizing later, either backfill every systems lesson with `track: 'systems'` or delete this one — don't leave the inconsistency. (See `jsLessons.test.js` line 10 for the only place `track` is actually queried — it filters by `=== 'javascript'`, so the explicit `'systems'` doesn't break anything; it's just visually inconsistent with the rest of `puzzles.js`.)
+
+2. **`order: 8.5` works because the field accepts numbers OR strings.** `puzzles.test.js` line 51 explicitly allows both (the JS Sandbox track uses string orders like `'J1'`). Don't be tempted to "clean up" the field to integer-only.
+
+3. **The initial state is *fully wired* — `initialEdges()` returns the Client → LB and LB → VPS edges.** This is unusual for systems puzzles (most only seed `initialNodes()` and leave the student to wire). The choice here is intentional: the lesson is about *redundancy*, not *wiring*, and the failure-injection invitation ("click the VPS, hit Simulate failure, click Run") only makes sense if the graph is already runnable. The grader explicitly tests that the initial state simulates `ok: true`. If you later decide to make the lesson teach wiring too, drop `initialEdges` and adjust the test in step 2.
+
+4. **The pedagogy is "two is enough"; the math actually allows one.** This is the load-bearing tension. A future maintainer might look at the simulator output (100% success on initial state) and think the requirement is wrong. It isn't — the requirement is the lesson. If the operator ever wants to *force* the failure-injection click, the upgrade path is: extend `initialNodes()` to ship the single VPS with `data.failed: true` (or extend the puzzle schema with a `preFailed: ['vps-1']` field), and update test 2 to expect `successRate === 0` instead of `>= 0.99`. That swaps the teaching from "the rule says two" to "the math says two when one is broken." Both work; only one is currently shipped.
+
+5. **The bonus test asserts the contrast pair (one-failed serves; both-failed serves zero) — keep them together.** If you ever delete the both-failed half thinking it's redundant, you lose the assertion that *two* failures actually do strand traffic, and a future bug where the LB silently routes to a non-existent destination wouldn't be caught. The contrast is the proof, not just a sanity check.
+
