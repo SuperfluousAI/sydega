@@ -471,6 +471,73 @@ export const puzzles = {
     }),
   },
 
+  latencyAddsUp: {
+    id: 'latencyAddsUp',
+    order: 6.7,
+    track: 'systems',
+    difficulty: 'easy',
+    title: 'Latency Adds Up',
+    blurb:
+      'Every stage in the request path adds milliseconds. The path here is Client → Load Balancer → App Server → Database; the simulator sums each stage\'s `latency` along the way (LB 1ms + App 25ms + DB 35ms = 61ms total). Your target: average latency under 50ms. Tune one or two of the stages — the largest stage is usually the highest-leverage knob.',
+    kind: 'flow',
+    allowedComponents: [
+      'client',
+      'loadBalancer',
+      { type: 'service', role: 'appServer' },
+      'database',
+    ],
+    background: [
+      'A request\'s response time is the sum of every hop it makes. The user sends a packet to the load balancer; the LB picks an app server and forwards it; the app server queries the database and waits; the database does the work and replies; everything rewinds back up. Each of those steps takes some milliseconds. The end-to-end latency the user perceives is the sum.',
+      'In this simulator each component has a `latency` config (milliseconds added per request as it passes through). The flow simulator literally walks the path and accumulates: at each node, `latency_to_here = latency_at_parent + this_node_latency`. The average reported in the Results pane is that path-sum, weighted by how many requests were served. Add a stage — the number goes up. Lower a stage\'s `latency` — the number comes down by exactly that much.',
+      'Production engineers chase the LARGEST stage first. Shaving 10ms off the slowest hop wins more than shaving 1ms off everything else combined. Eventually the longest stage becomes "the database, on a cold read" — and that\'s where caches come in (next lesson): a cache hit short-circuits the path before the slow stage runs at all. The single-digit-millisecond response times you see from popular sites are not magic: they\'re the result of obsessively pushing the path-sum down, one stage at a time, then short-circuiting the worst remaining stage with a cache.',
+    ],
+    initialNodes: () => [
+      node('users', 'client', { x: 60, y: 240 }, { rps: 200, readRatio: 0.9 }),
+      node('lb-1', 'loadBalancer', { x: 240, y: 240 }, { latency: 1 }),
+      node('app-1', 'service', { x: 440, y: 240 }, { role: 'appServer', capacity: 500, latency: 25 }),
+      node('db-1', 'database', { x: 640, y: 240 }, { latency: 35 }),
+    ],
+    initialEdges: () => [
+      edge('users', 'lb-1'),
+      edge('lb-1', 'app-1'),
+      edge('app-1', 'db-1'),
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'The pre-wired path has enough capacity at every stage for 200 req/s — if success rate ever drops, something got disconnected. The puzzle is about latency, not capacity; leave the wires alone.',
+      },
+      {
+        key: 'latency',
+        label: 'Avg latency < 50ms',
+        test: (r) => r.avgLatency < 50,
+        lesson:
+          'Latency is the sum along the path. LB (1) + App (25) + DB (35) = 61ms. Drop the biggest contributor: lower the Database\'s `latency` config (try 20). One config tweak gets you from 61 to 46. Production engineers always attack the longest stage first.',
+      },
+    ],
+    solution: () => ({
+      // 200 req/s along Client → LB → App → DB.
+      // Default latencies: LB 1ms, App 25ms, DB 35ms = 61ms total — fails.
+      // Pull the biggest stage down: DB 35 → 20. New total: 1 + 25 + 20 = 46ms.
+      // Pedagogy: one knob, one stage, one number — the simplest possible
+      // demonstration that latency is a sum and the longest stage dominates.
+      nodes: [
+        node('users', 'client', { x: 60, y: 240 }, { rps: 200, readRatio: 0.9 }),
+        node('lb-1', 'loadBalancer', { x: 240, y: 240 }, { latency: 1 }),
+        node('app-1', 'service', { x: 440, y: 240 }, { role: 'appServer', capacity: 500, latency: 25 }),
+        node('db-1', 'database', { x: 640, y: 240 }, { latency: 20 }),
+      ],
+      edges: [
+        edge('users', 'lb-1'),
+        edge('lb-1', 'app-1'),
+        edge('app-1', 'db-1'),
+      ],
+    }),
+  },
+
   addACache: {
     id: 'addACache',
     order: 7,
@@ -2938,6 +3005,7 @@ export const puzzleOrder = [
   'pointDomain',
   'addLoadBalancer',
   'persistWithDatabase',
+  'latencyAddsUp',
   'addACache',
   'readWriteSplit',
   'urlShortener',

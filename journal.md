@@ -2768,3 +2768,47 @@ Estimated ~1000 lines of new code across simulator, components, lessons, UI, tes
 
 5. **The "serializer" framing as the pedagogy.** Calling out *upfront* that user code is "the deserializer + business logic + reserializer" is the conceptual bridge from "I'm writing a small JS function" to "I'm writing what every microservice in production is." Operator's instinct here was the load-bearing insight of the whole design conversation.
 
+## Session 1 Part 29 — 2026-05-14: L6.7 Latency Adds Up
+
+A single small lesson, inserted between L6 ("Persist with a Database", order 6) and L7 ("Add a Cache", order 7) at order 6.7. The "Latency Adds Up" ceremony — the first lesson in the curriculum that explicitly teaches a concept (path-sum latency) that every prior flow lesson has been *displaying* in the Results pane without explaining. easy track, one knob, one number to drive down. Test count 602 → 605 (+3).
+
+### What this Part is
+
+Every flow lesson from L4 onward shows an avg latency metric in the Results pane. None of them explicitly teach why it has the value it does. Players who got curious had to read source. This lesson is the ceremony: a pre-wired four-stage path, latency printed on each stage, target 50ms, current 61ms, drag a slider, watch the number move. The mechanic the simulator already implements (`latency_to_here = parent_latency + this_node_latency`, weighted by served at the sink) is now the lesson topic.
+
+The lesson also seeds L7 ("Add a Cache"). The blurb closes by pointing at the next move: once you've squeezed each individual stage as far as it'll go, the next lever is short-circuiting the slowest stage entirely — which is what a cache hit does.
+
+### Pedagogical decisions
+
+**Why 50ms as the threshold.** The initial state sums to 61ms (LB 1 + App 25 + DB 35). Target 50ms is 11ms under, which is *one* meaningful tweak (DB 35 → 20, App 25 → 10, or any combination summing ≥ 12ms). 50ms is also a recognizable real-world latency budget — "snappy" web responses hover around 100ms total round-trip; backend response under 50ms is the kind of number an SRE would aim for on a hot path. Picking a threshold that's both *just barely failed* (so the puzzle reads as solvable) and *real-world meaningful* (so the number isn't arbitrary) was the load-bearing design call.
+
+**Why the canonical solution drops only the DB.** Easy difficulty is binding — one knob. "Production engineers chase the longest stage first" is the rule of thumb worth installing as a habit; the canonical solution acts it out (DB is the longest stage at 35ms, drop it to 20). Two-knob solutions (App 25 → 10 plus DB 35 → 25) also pass and that's intentional — the lesson teaches *the principle*, not a specific answer.
+
+**Why pre-place + pre-wire everything.** The lesson is about config, not topology. Forcing the player to assemble the graph would split attention. They open the canvas, see the system is already wired and running, see it's too slow, click a node, lower a number, hit Run. One concept, one interaction.
+
+**Why include the LB even though it adds only 1ms.** Two reasons. (1) Realistic shape — every production system has an LB at the edge, and the lesson sequence has already introduced one in L5. (2) Visual reinforcement that "every stage adds something, even the cheap ones." A four-stage path teaches the *sum* concept harder than a three-stage path. The 1ms is the cheapest stage but it's still a stage.
+
+**Why `successRate ≥ 99%` is a requirement even though the puzzle isn't about capacity.** Safety net. If a player accidentally rewires the graph (or deletes the App Server) they should fail on success-rate first, not on a confusing "latency is NaN" error. Two requirements give the lesson room to give a useful corrective message when the player breaks the wrong invariant.
+
+### Tests added
+
+Three tests in `src/lib/lessons/latencyAddsUp.test.js` (new directory — first per-lesson test file):
+
+1. **`solution() satisfies every requirement`** — redundant with the cross-puzzle contract in `puzzles.test.js`, but kept on purpose. When this test is colocated with the lesson it acts as a regression alarm for anyone editing *this* puzzle: failure points right at the file they were editing, not at a generic "puzzle %s solution didn't pass" message.
+
+2. **`initial state has avgLatency > 50`** — the *teaching* contract. If a future change to default latencies (in `componentTypes.js`) brings the initial state below the threshold, the lesson stops teaching anything because it would auto-pass on load. Lock the bar here.
+
+3. **`applying the solution drives avgLatency below 50`** — the *fix actually fixes the tested metric* contract. Belt-and-suspenders with #1 since #1 tests `evaluatePuzzle` and this tests the raw sim result. If the latency requirement is ever quietly weakened or a metric-name change drifts, this test alarms separately.
+
+### What might surprise a future maintainer
+
+- **The lesson sits at order 6.7, not 6.5 as suggested by the original task description.** The task referenced "L6.5 Cache Hit Rate" as the prior lesson, but that lesson doesn't exist in the codebase (the `puzzleOrder` array goes `persistWithDatabase` (6) → `addACache` (7) directly). Rather than synthesize a missing prerequisite, this lesson was inserted into the actual gap. If Cache Hit Rate ships later as L6.5, this lesson at 6.7 still sits in the right place: it teaches the *concept* (latency is a sum) that L7 ("Add a Cache") then exploits.
+
+- **`track: 'systems'` is set explicitly here, even though the systems track is the default when `track` is omitted.** Costs nothing, makes the field-set match the JS-track lessons which always set their track explicitly. Future-proofing: if we ever flip the default, this lesson stays put.
+
+- **`initialEdges()` is set.** Most flow lessons leave initial edges blank and let the player wire from scratch. This lesson pre-wires because the topology is fixed — the *config*, not the graph, is what the player edits. If you're studying flow puzzles to learn the pattern, don't treat "blank initial edges" as universal — pre-wiring is the right call when the lesson's interaction is config-tuning rather than wiring.
+
+- **The first per-lesson test file lives at `src/lib/lessons/latencyAddsUp.test.js`.** Until now every test sat directly in `src/lib/*.test.js`. The `lessons/` subdirectory is new with this Part. If more per-lesson tests follow the same pedagogical-contract pattern, they belong here too. Vitest's default glob picks them up without config changes.
+
+- **The DB and App both have their `latency` set explicitly in `initialNodes()` even though one matches the default and one doesn't.** Done on purpose so the seeded values aren't dependent on `componentTypes.js` defaults that might shift later. The initial state of this lesson is a sealed unit: 1 + 25 + 35 = 61, regardless of what defaults the rest of the codebase carries.
+
