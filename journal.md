@@ -2768,3 +2768,47 @@ Estimated ~1000 lines of new code across simulator, components, lessons, UI, tes
 
 5. **The "serializer" framing as the pedagogy.** Calling out *upfront* that user code is "the deserializer + business logic + reserializer" is the conceptual bridge from "I'm writing a small JS function" to "I'm writing what every microservice in production is." Operator's instinct here was the load-bearing insight of the whole design conversation.
 
+## Session 1 Part 26 — 2026-05-14: L4.1 Your First Request
+
+(Numbering placeholder — operator may renumber when other parallel agents merge in.)
+
+### What this Part is
+
+A single new lesson, **L4.1 Your First Request**, inserted between L4 (Point a Domain at a VPS) and L5 (Add a Load Balancer). It's the first flow-track lesson the student sees. Before this Part, the curriculum went L1 (Build a Computer, composition) → L2 (Home Network, composition) → L3 (Reach the Internet, composition) → L4 (Point a Domain, connectivity) → **L5 (Add a Load Balancer, flow — 3000 req/s crushing one VPS)**. That last hop is a cliff: the student has never seen `rps`, `served`, or `dropped` in the results pane before they're asked to fix overload.
+
+L4.1 is the ramp. The simplest possible flow shape — one Client (300 rps) wired to one VPS (capacity 1000). Capacity is comfortably above traffic, so the student sees 100% success on Run. The lesson teaches the language: requests per second, capacity, served vs attempted, what "dropped" looks like in the results pane.
+
+### Pedagogical decisions
+
+- **One move, one new concept.** The canonical solution is a single wire from `client-1` to `vps-1`. Both nodes are pre-placed. The student doesn't need to think about layout, doesn't need to pick components from the palette — they just see two things on the canvas and infer "I need to connect these." Then they click Run and read the new numbers.
+
+- **300 rps against 1000 cap (not 1000 against 1000).** Picked a wide margin deliberately. The lesson is about *what the numbers mean*, not *how close to capacity is safe*. L5 onward is where capacity-vs-traffic becomes the teaching point. Here, the math should be obviously fine so the student notices the numbers themselves, not the headroom.
+
+- **Two requirements, not three.** `successRate ≥ 99%` plus `totalServed ≥ 297`. Skipped a presence requirement (e.g. "has a VPS") because the VPS is pre-placed in `initialNodes` — adding a redundant requirement would just clutter the panel. Existing convention from L4 (one requirement: `allReach`) supports keeping easy lessons minimal.
+
+- **`readRatio: 1`.** The Client is read-only. The student hasn't encountered the read/write split yet (that's L8). Sending pure reads keeps the results pane simpler — only `totalReadServed` / `totalReadAttempted` move, not the write counterparts.
+
+- **Conversational background.** Three short paragraphs in the reading panel: (1) what's new about this lesson vs. composition/connectivity, (2) what req/s means, (3) what 100% success looks like and what L5+ will twist next. Tone calibrated against the existing L4 / L6 backgrounds — beginner-friendly, no jargon dropped without definition.
+
+### Tests added
+
+A new file `src/lib/lessons/yourFirstRequest.test.js` with 3 tests:
+
+1. **Registration**: the puzzle exists in `puzzles`, has `kind: 'flow'`, `track: 'systems'`, `difficulty: 'easy'`.
+2. **Solution passes**: the canonical `solution()` graph, simulated through the flow simulator, returns `successRate ≥ 0.99`, `totalDropped === 0`, and `evaluatePuzzle` returns `passed: true`.
+3. **Initial state fails**: the pre-placed Client + VPS with no edge between them does NOT pass — proves the lesson is non-trivial; the student has to do something (wire them up) to win.
+
+Test count: **598 → 605** (+7). 3 from the new file + 4 from the framework's `it.each(puzzleOrder)` auto-coverage in `puzzles.test.js` (required-fields, allowedComponents-references-real-types, initialNodes-returns-valid-nodes, solution-passes-evaluation). All green.
+
+### What might surprise a future maintainer
+
+- **The puzzle is registered in `puzzles` as `yourFirstRequest` but appears between L4 and L5 visually because of `order: 4.1`.** The Palette's `compareForSort` (Palette.jsx) handles fractional orders correctly — same pattern as the existing `19.1` (flashSaleAtScale) and `19.2` (searchAtScale). The `puzzleOrder` array determines presence; the `order` field determines sort position. Both must agree, and both were updated.
+
+- **The initial state has both a Client AND a VPS pre-placed.** Earlier easy lessons (L5 Add Load Balancer, L6 Persist with Database) pre-place only the Client and require the student to drop the rest from the palette. L4.1 pre-places both because the *one* concept being taught is "wire two things together to make traffic flow" — making the student drop a VPS would add a second move and obscure the core teaching. This is the easiest lesson in the systems track; that's intentional.
+
+- **No `initialEdges` function.** Most flow puzzles only define `initialNodes` and let `initialEdges` default to empty. The test file calls `puzzle.initialEdges?.() || []` defensively — matches the pattern in `jsLessons.test.js`.
+
+- **`allowedComponents: ['client', 'vps']` is minimal.** Even though the canonical only places one of each, the allowed list controls the palette filter — the student could (and would, exploring) drop a second VPS or a second Client. The lesson would still pass with extras (they'd be unwired and ignored by the simulator), but the palette is intentionally narrow to keep the lesson focused. L5 introduces `loadBalancer`; L6 introduces `service` and `database`. Don't widen this list later — the gradient matters.
+
+- **No `background` paragraph about overload yet.** That's deliberate. Teaching the bottleneck-and-fix mechanic is L5's job; if L4.1 mentions "but what if rps exceeds capacity?" the student walks into L5 with the answer already in their head. The background here ends with a teaser ("Lessons 5 onward turn the dial up") that points without giving away the punchline.
+

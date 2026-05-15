@@ -372,6 +372,55 @@ export const puzzles = {
     }),
   },
 
+  yourFirstRequest: {
+    id: 'yourFirstRequest',
+    order: 4.1,
+    track: 'systems',
+    difficulty: 'easy',
+    title: 'Your First Request',
+    blurb:
+      'Lessons 1-4 wired things together. This is the first lesson that measures *traffic*. A Client sends requests every second; a VPS receives them and serves what it can. Wire the Client to the VPS, click Run, and watch the numbers come back.',
+    kind: 'flow',
+    allowedComponents: ['client', 'vps'],
+    initialNodes: () => [
+      node('client-1', 'client', { x: 100, y: 220 }, { rps: 300, readRatio: 1 }),
+      node('vps-1', 'vps', { x: 540, y: 220 }, { capacity: 1000, latency: 25 }),
+    ],
+    background: [
+      'Up to now the canvas has been about *composition* (does this Computer have enough CPU?) and *connectivity* (does this Visitor reach a VPS?). Real systems live or die on a third thing: *traffic*. How many requests per second is the Client sending? How many can the VPS actually serve? Are any being dropped on the floor?',
+      'A **request per second** (req/s, or rps) is the unit. A Client at 300 rps is sending three hundred requests every second, forever. A VPS with capacity 1000 can serve up to a thousand requests per second; anything beyond that gets *dropped*. The simulator steady-states the system and reports two numbers you care about: **attempted** (what came in) and **served** (what made it through). The gap is **dropped**.',
+      'This lesson is the easy case: 300 rps against a 1000 rps machine. Wire them up, click Run, and you should see 100% success — every request the Client sends, the VPS serves. No drops. This is what a healthy system looks like before anything is under pressure. Lessons 5 onward turn the dial up and ask "what do you do when one VPS can\'t keep up?"',
+    ],
+    requirements: [
+      {
+        key: 'successRate',
+        label: 'Success rate ≥ 99%',
+        test: (r) => r.successRate >= 0.99,
+        lesson:
+          'Success rate is served / attempted. With 300 req/s coming in and a VPS that handles 1000 req/s, every request should make it through — provided the Client is actually wired to the VPS. If success is 0%, the wire is missing; the Client\'s requests are going nowhere.',
+      },
+      {
+        key: 'served',
+        label: 'Served ≥ 297 req/s',
+        test: (r) => r.totalServed >= 297,
+        lesson:
+          'Served counts requests that reached a working endpoint. 297 is 99% of 300 — anything less means traffic is being lost. Most often the cause is a missing wire between Client and VPS. The Run button reports this number in the results pane.',
+      },
+    ],
+    solution: () => ({
+      // The single move: wire client-1 to vps-1. Capacity (1000) is comfortably
+      // above traffic (300 rps), so served = attempted = 300 and dropped = 0.
+      // Pedagogy: a single healthy server, traffic well within capacity, 100%
+      // success. The next lesson cranks rps past one VPS's capacity to motivate
+      // the Load Balancer.
+      nodes: [
+        node('client-1', 'client', { x: 100, y: 220 }, { rps: 300, readRatio: 1 }),
+        node('vps-1', 'vps', { x: 540, y: 220 }, { capacity: 1000, latency: 25 }),
+      ],
+      edges: [edge('client-1', 'vps-1')],
+    }),
+  },
+
   addLoadBalancer: {
     id: 'addLoadBalancer',
     order: 5,
@@ -2936,6 +2985,7 @@ export const puzzleOrder = [
   'homeNetwork',
   'reachTheInternet',
   'pointDomain',
+  'yourFirstRequest',
   'addLoadBalancer',
   'persistWithDatabase',
   'addACache',
